@@ -1,0 +1,102 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --editor-bg: #dab495;
+  --editor-surface: #FFFBF0;
+  --editor-surface-hover: #FDF6E3;
+  --editor-border: #000000;
+  --editor-border-light: #333333;
+  --editor-text: #000000;
+  --editor-text-muted: #525252;
+  --editor-text-dim: #737373;
+  --editor-accent: #FF4D4D;
+  --editor-accent-hover: #E60000;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow: hidden;
+  height: 100vh;
+  background-color: var(--editor-bg);
+  background-image: radial-gradient(#000000 1.5px, transparent 1.5px);
+  background-size: 24px 24px;
+  color: var(--editor-text);
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Custom scrollbar for retro theme */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--editor-surface);
+  border-left: 2px solid var(--editor-border);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--editor-accent);
+  border: 2px solid var(--editor-border);
+  box-shadow: inset -1px -1px 0 rgba(0, 0, 0, 0.2);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--editor-accent-hover);
+}
+
+/* Custom range slider styling - Retro Blocky */
+input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 12px;
+  background: var(--editor-surface);
+  border: 2px solid var(--editor-border);
+  border-radius: 0;
+  outline: none;
+  cursor: pointer;
+}
+
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 24px;
+  border: 2px solid var(--editor-border);
+  background: var(--editor-accent);
+  cursor: pointer;
+  transition: none;
+  box-shadow: 2px 2px 0 #000;
+  margin-top: -8px;
+  /* Center thumb */
+}
+
+input[type='range']::-webkit-slider-thumb:hover {
+  transform: translateY(-1px);
+  box-shadow: 2px 3px 0 #000;
+}
+
+/* Number input styling */
+input[type='number'] {
+  -moz-appearance: textfield;
+  background: var(--editor-surface);
+  color: var(--editor-text);
+  border: 2px solid var(--editor-border);
+  border-radius: 0;
+}
+
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
