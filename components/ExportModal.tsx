@@ -186,7 +186,7 @@ export default function ExportModal() {
                                                     'transition-colors duration-150',
                                                     format === f
                                                         ? 'bg-editor-accent text-white'
-                                                        : 'bg-editor-border text-editor-text hover:bg-editor-borderLight'
+                                                        : 'bg-editor-border text-white hover:bg-editor-borderLight'
                                                 )}
                                             >
                                                 {f.toUpperCase()}
