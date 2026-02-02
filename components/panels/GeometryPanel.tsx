@@ -57,7 +57,7 @@ export default function GeometryPanel() {
                             'transition-colors duration-150',
                             crop.isActive
                                 ? 'bg-editor-accent text-white'
-                                : 'bg-editor-border text-editor-text hover:bg-editor-borderLight'
+                                : 'bg-editor-border text-white hover:bg-editor-borderLight'
                         )}
                     >
                         <Crop size={12} />
@@ -76,7 +76,7 @@ export default function GeometryPanel() {
                                 'transition-colors duration-150',
                                 adjustments.cropAspectRatio === ratio.value
                                     ? 'bg-editor-accent text-white'
-                                    : 'bg-editor-border text-editor-textMuted hover:bg-editor-borderLight hover:text-editor-text'
+                                    : 'bg-editor-border text-white hover:bg-editor-borderLight hover:text-white'
                             )}
                         >
                             {ratio.label}
@@ -108,7 +108,7 @@ export default function GeometryPanel() {
                     onClick={() => handleRotate(-90)}
                     className={cn(
                         'flex items-center justify-center w-8 h-8 rounded',
-                        'bg-editor-border text-editor-text',
+                        'bg-editor-border text-white',
                         'hover:bg-editor-borderLight transition-colors duration-150'
                     )}
                     title="Rotate 90° Counter-Clockwise"
@@ -119,7 +119,7 @@ export default function GeometryPanel() {
                     onClick={() => handleRotate(90)}
                     className={cn(
                         'flex items-center justify-center w-8 h-8 rounded',
-                        'bg-editor-border text-editor-text',
+                        'bg-editor-border text-white',
                         'hover:bg-editor-borderLight transition-colors duration-150'
                     )}
                     title="Rotate 90° Clockwise"
