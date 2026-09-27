@@ -198,6 +198,16 @@ function CropTool({
     const shapeRef = useRef<Konva.Rect>(null);
     const trRef = useRef<Konva.Transformer>(null);
 
+    // Direct Konva node references for 120fps smooth visual tracking without React re-renders
+    const topOverlayRef = useRef<Konva.Rect>(null);
+    const bottomOverlayRef = useRef<Konva.Rect>(null);
+    const leftOverlayRef = useRef<Konva.Rect>(null);
+    const rightOverlayRef = useRef<Konva.Rect>(null);
+    const vLine1Ref = useRef<Konva.Rect>(null);
+    const vLine2Ref = useRef<Konva.Rect>(null);
+    const hLine1Ref = useRef<Konva.Rect>(null);
+    const hLine2Ref = useRef<Konva.Rect>(null);
+
     const scaledWidth = width * scale;
     const scaledHeight = height * scale;
 
@@ -206,21 +216,64 @@ function CropTool({
     const initialW = (crop.width / 100) * scaledWidth;
     const initialH = (crop.height / 100) * scaledHeight;
 
-    // Local state for smooth 60fps real-time updates without React store thrashing
-    const [liveBox, setLiveBox] = useState({
-        x: initialX,
-        y: initialY,
-        width: initialW,
-        height: initialH,
-    });
+    const updateVisuals = () => {
+        const node = shapeRef.current;
+        if (!node) return;
 
-    // Keep liveBox synced when crop props change (e.g., aspect ratio clicked)
+        const scaleX = node.scaleX();
+        const scaleY = node.scaleY();
+        let nx = node.x();
+        let ny = node.y();
+        let nw = Math.abs(node.width() * scaleX);
+        let nh = Math.abs(node.height() * scaleY);
+
+        if (scaleX < 0) nx -= nw;
+        if (scaleY < 0) ny -= nh;
+
+        // Visual overlays clamp to bounds
+        const topH = Math.max(0, Math.min(scaledHeight, ny));
+        topOverlayRef.current?.height(topH);
+
+        const botY = Math.max(0, Math.min(scaledHeight, ny + nh));
+        bottomOverlayRef.current?.y(botY);
+        bottomOverlayRef.current?.height(Math.max(0, scaledHeight - botY));
+
+        const leftW = Math.max(0, Math.min(scaledWidth, nx));
+        leftOverlayRef.current?.y(Math.max(0, ny));
+        leftOverlayRef.current?.width(leftW);
+        leftOverlayRef.current?.height(Math.max(0, Math.min(scaledHeight - ny, nh)));
+
+        const rightX = Math.max(0, Math.min(scaledWidth, nx + nw));
+        rightOverlayRef.current?.x(rightX);
+        rightOverlayRef.current?.y(Math.max(0, ny));
+        rightOverlayRef.current?.width(Math.max(0, scaledWidth - rightX));
+        rightOverlayRef.current?.height(Math.max(0, Math.min(scaledHeight - ny, nh)));
+
+        // Update rule-of-thirds grid lines
+        const thirdW = nw / 3;
+        const thirdH = nh / 3;
+
+        vLine1Ref.current?.position({ x: nx + thirdW, y: ny });
+        vLine1Ref.current?.height(nh);
+
+        vLine2Ref.current?.position({ x: nx + thirdW * 2, y: ny });
+        vLine2Ref.current?.height(nh);
+
+        hLine1Ref.current?.position({ x: nx, y: ny + thirdH });
+        hLine1Ref.current?.width(nw);
+
+        hLine2Ref.current?.position({ x: nx, y: ny + thirdH * 2 });
+        hLine2Ref.current?.width(nw);
+
+        node.getLayer()?.batchDraw();
+    };
+
+    // Sync shape position and transformer when crop props change from external UI (e.g. aspect ratio buttons)
     useEffect(() => {
         const nx = (crop.x / 100) * scaledWidth;
         const ny = (crop.y / 100) * scaledHeight;
         const nw = (crop.width / 100) * scaledWidth;
         const nh = (crop.height / 100) * scaledHeight;
-        setLiveBox({ x: nx, y: ny, width: nw, height: nh });
 
         if (shapeRef.current) {
             shapeRef.current.position({ x: nx, y: ny });
@@ -229,15 +282,13 @@ function CropTool({
             shapeRef.current.scaleX(1);
             shapeRef.current.scaleY(1);
         }
-    }, [crop.x, crop.y, crop.width, crop.height, scaledWidth, scaledHeight]);
 
-    // Attach transformer to shape
-    useEffect(() => {
-        if (crop.isActive && trRef.current && shapeRef.current) {
+        if (trRef.current && shapeRef.current) {
             trRef.current.nodes([shapeRef.current]);
-            trRef.current.getLayer()?.batchDraw();
         }
-    }, [crop.isActive, crop.aspectRatio]);
+
+        updateVisuals();
+    }, [crop.x, crop.y, crop.width, crop.height, scaledWidth, scaledHeight]);
 
     // Aspect Ratio Logic
     useEffect(() => {
@@ -254,7 +305,6 @@ function CropTool({
                 newW = newH * targetRatio;
             }
 
-            // Center
             const newX = (width - newW) / 2;
             const newY = (height - newH) / 2;
 
@@ -269,24 +319,19 @@ function CropTool({
 
     if (!crop.isActive) return null;
 
-    // Real-time update during drag
     const handleDragMove = () => {
-        const node = shapeRef.current;
-        if (!node) return;
-        setLiveBox({
-            x: node.x(),
-            y: node.y(),
-            width: node.width() * node.scaleX(),
-            height: node.height() * node.scaleY(),
-        });
+        updateVisuals();
     };
 
     const handleDragEnd = () => {
         const node = shapeRef.current;
         if (!node) return;
 
-        const newX = Math.max(0, Math.min(scaledWidth, node.x()));
-        const newY = Math.max(0, Math.min(scaledHeight, node.y()));
+        const newX = Math.max(0, Math.min(scaledWidth - node.width(), node.x()));
+        const newY = Math.max(0, Math.min(scaledHeight - node.height(), node.y()));
+
+        node.position({ x: newX, y: newY });
+        updateVisuals();
 
         onUpdate({
             x: (newX / scaledWidth) * 100,
@@ -294,16 +339,8 @@ function CropTool({
         });
     };
 
-    // Real-time update during resize / transform
     const handleTransform = () => {
-        const node = shapeRef.current;
-        if (!node) return;
-        setLiveBox({
-            x: node.x(),
-            y: node.y(),
-            width: Math.max(20, node.width() * node.scaleX()),
-            height: Math.max(20, node.height() * node.scaleY()),
-        });
+        updateVisuals();
     };
 
     const handleTransformEnd = () => {
@@ -316,15 +353,32 @@ function CropTool({
         node.scaleX(1);
         node.scaleY(1);
 
-        const finalW = Math.max(20, node.width() * scaleX);
-        const finalH = Math.max(20, node.height() * scaleY);
-        const finalX = Math.max(0, Math.min(scaledWidth - finalW, node.x()));
-        const finalY = Math.max(0, Math.min(scaledHeight - finalH, node.y()));
+        let finalW = Math.abs(node.width() * scaleX);
+        let finalH = Math.abs(node.height() * scaleY);
+        let finalX = node.x();
+        let finalY = node.y();
+
+        if (scaleX < 0) {
+            finalX -= finalW;
+        }
+        if (scaleY < 0) {
+            finalY -= finalH;
+        }
+
+        // Clamp to image dimensions
+        finalX = Math.max(0, Math.min(scaledWidth - 20, finalX));
+        finalY = Math.max(0, Math.min(scaledHeight - 20, finalY));
+        finalW = Math.max(20, Math.min(scaledWidth - finalX, finalW));
+        finalH = Math.max(20, Math.min(scaledHeight - finalY, finalH));
 
         node.width(finalW);
         node.height(finalH);
-        node.x(finalX);
-        node.y(finalY);
+        node.position({ x: finalX, y: finalY });
+
+        if (trRef.current) {
+            trRef.current.nodes([node]);
+        }
+        updateVisuals();
 
         onUpdate({
             x: (finalX / scaledWidth) * 100,
@@ -334,56 +388,38 @@ function CropTool({
         });
     };
 
-    const boundBoxFunc = (oldBox: any, newBox: any) => {
-        if (newBox.x < 0) {
-            newBox.width += newBox.x;
-            newBox.x = 0;
-        }
-        if (newBox.y < 0) {
-            newBox.height += newBox.y;
-            newBox.y = 0;
-        }
-        if (newBox.x + newBox.width > scaledWidth) {
-            newBox.width = scaledWidth - newBox.x;
-        }
-        if (newBox.y + newBox.height > scaledHeight) {
-            newBox.height = scaledHeight - newBox.y;
-        }
-        if (newBox.width < 24) newBox.width = 24;
-        if (newBox.height < 24) newBox.height = 24;
-        return newBox;
-    };
-
-    // Thirds grid lines based on liveBox
-    const thirdW = liveBox.width / 3;
-    const thirdH = liveBox.height / 3;
+    const thirdW = initialW / 3;
+    const thirdH = initialH / 3;
 
     return (
         <Group>
             {/* Dimmed backdrop around crop box (4 rects) */}
             <Group listening={false}>
-                <Rect x={0} y={0} width={scaledWidth} height={Math.max(0, liveBox.y)} fill="black" opacity={0.6} />
+                <Rect ref={topOverlayRef} x={0} y={0} width={scaledWidth} height={Math.max(0, initialY)} fill="black" opacity={0.6} />
                 <Rect
+                    ref={bottomOverlayRef}
                     x={0}
-                    y={Math.min(scaledHeight, liveBox.y + liveBox.height)}
+                    y={Math.min(scaledHeight, initialY + initialH)}
                     width={scaledWidth}
-                    height={Math.max(0, scaledHeight - (liveBox.y + liveBox.height))}
+                    height={Math.max(0, scaledHeight - (initialY + initialH))}
                     fill="black"
                     opacity={0.6}
                 />
                 <Rect
+                    ref={leftOverlayRef}
                     x={0}
-                    y={Math.max(0, liveBox.y)}
-                    width={Math.max(0, liveBox.x)}
-                    height={Math.max(0, liveBox.height)}
+                    y={Math.max(0, initialY)}
+                    width={Math.max(0, initialX)}
+                    height={initialH}
                     fill="black"
                     opacity={0.6}
                 />
                 <Rect
-                    x={Math.min(scaledWidth, liveBox.x + liveBox.width)}
-                    y={Math.max(0, liveBox.y)}
-                    width={Math.max(0, scaledWidth - (liveBox.x + liveBox.width))}
-                    height={Math.max(0, liveBox.height)}
+                    ref={rightOverlayRef}
+                    x={Math.min(scaledWidth, initialX + initialW)}
+                    y={Math.max(0, initialY)}
+                    width={Math.max(0, scaledWidth - (initialX + initialW))}
+                    height={initialH}
                     fill="black"
                     opacity={0.6}
                 />
@@ -396,7 +432,7 @@ function CropTool({
                 y={initialY}
                 width={initialW}
                 height={initialH}
-                fill="rgba(255, 255, 255, 0.001)" // Non-zero alpha guarantees pointer hit detection everywhere inside
+                fill="rgba(255, 255, 255, 0.001)"
                 stroke="#FFFFFF"
                 strokeWidth={1.5}
                 draggable
@@ -405,8 +441,11 @@ function CropTool({
                 onTransform={handleTransform}
                 onTransformEnd={handleTransformEnd}
                 dragBoundFunc={(pos) => {
-                    const newX = Math.max(0, Math.min(scaledWidth - liveBox.width, pos.x));
-                    const newY = Math.max(0, Math.min(scaledHeight - liveBox.height, pos.y));
+                    const node = shapeRef.current;
+                    const curW = node ? Math.abs(node.width() * node.scaleX()) : initialW;
+                    const curH = node ? Math.abs(node.height() * node.scaleY()) : initialH;
+                    const newX = Math.max(0, Math.min(scaledWidth - curW, pos.x));
+                    const newY = Math.max(0, Math.min(scaledHeight - curH, pos.y));
                     return { x: newX, y: newY };
                 }}
                 onMouseEnter={(e) => {
@@ -421,13 +460,13 @@ function CropTool({
 
             {/* Rule of thirds grid inside crop box */}
             <Group listening={false} opacity={0.45}>
-                <Rect x={liveBox.x + thirdW} y={liveBox.y} width={1} height={liveBox.height} fill="white" />
-                <Rect x={liveBox.x + thirdW * 2} y={liveBox.y} width={1} height={liveBox.height} fill="white" />
-                <Rect x={liveBox.x} y={liveBox.y + thirdH} width={liveBox.width} height={1} fill="white" />
-                <Rect x={liveBox.x} y={liveBox.y + thirdH * 2} width={liveBox.width} height={1} fill="white" />
+                <Rect ref={vLine1Ref} x={initialX + thirdW} y={initialY} width={1} height={initialH} fill="white" />
+                <Rect ref={vLine2Ref} x={initialX + thirdW * 2} y={initialY} width={1} height={initialH} fill="white" />
+                <Rect ref={hLine1Ref} x={initialX} y={initialY + thirdH} width={initialW} height={1} fill="white" />
+                <Rect ref={hLine2Ref} x={initialX} y={initialY + thirdH * 2} width={initialW} height={1} fill="white" />
             </Group>
 
-            {/* Transformer with bold, responsive, neobrutalist yellow-gold handles */}
+            {/* Transformer with bold, responsive, neobrutalist yellow-gold handles for ALL 8 directions */}
             <Transformer
                 ref={trRef}
                 rotateEnabled={false}
@@ -446,7 +485,12 @@ function CropTool({
                           ]
                         : ['top-left', 'top-right', 'bottom-right', 'bottom-left']
                 }
-                boundBoxFunc={boundBoxFunc}
+                boundBoxFunc={(oldBox, newBox) => {
+                    if (Math.abs(newBox.width) < 20 || Math.abs(newBox.height) < 20) {
+                        return oldBox;
+                    }
+                    return newBox;
+                }}
                 anchorSize={16}
                 anchorStroke="#000000"
                 anchorStrokeWidth={2}
