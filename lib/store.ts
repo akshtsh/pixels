@@ -67,6 +67,7 @@ export interface ImageState {
 
 interface HistoryEntry {
     image: ImageState;
+    crop: CropState;
     adjustments: AdjustmentState;
     masks: Mask[];
     timestamp: number;
@@ -187,6 +188,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         const newHistory: HistoryEntry[] = [
             {
                 image: newImage,
+                crop: { ...defaultCrop },
                 adjustments: newAdjustments,
                 masks: [],
                 timestamp: Date.now(),
@@ -243,12 +245,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         get().pushHistory();
     },
     globalReset: () => {
-        set((state) => ({
+        set({
             adjustments: { ...defaultAdjustments },
             crop: { ...defaultCrop },
             masks: [],
             activeMaskId: null,
-        }));
+        });
         get().pushHistory();
     },
 
@@ -308,7 +310,17 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         const cropH = (crop.height / 100) * image.originalHeight;
 
         // Skip if crop covers the entire image
-        if (cropX === 0 && cropY === 0 && cropW === image.originalWidth && cropH === image.originalHeight) {
+        if (
+            Math.round(cropX) <= 0 &&
+            Math.round(cropY) <= 0 &&
+            Math.round(cropW) >= image.originalWidth &&
+            Math.round(cropH) >= image.originalHeight
+        ) {
+            set({ crop: { ...defaultCrop } });
+            return;
+        }
+
+        if (cropW < 5 || cropH < 5) {
             set({ crop: { ...defaultCrop } });
             return;
         }
@@ -386,15 +398,16 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     history: [],
     historyIndex: -1,
     pushHistory: () => {
-        const { image, adjustments, masks, history, historyIndex } = get();
+        const { image, crop, adjustments, masks, history, historyIndex } = get();
         if (!image.src) return;
 
         // Slice history up to current index
         const validHistory = historyIndex >= 0 ? history.slice(0, historyIndex + 1) : [];
 
-        // Add new entry with deep clones
+        // Add new entry with deep clones (always store inactive crop state in history)
         validHistory.push({
             image: { ...image },
+            crop: { ...crop, isActive: false },
             adjustments: { ...adjustments },
             masks: masks ? JSON.parse(JSON.stringify(masks)) : [],
             timestamp: Date.now(),
@@ -417,6 +430,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const entry = history[newIndex];
             set({
                 image: { ...entry.image },
+                crop: entry.crop ? { ...entry.crop, isActive: false } : { ...defaultCrop },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,
@@ -430,6 +444,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const entry = history[newIndex];
             set({
                 image: { ...entry.image },
+                crop: entry.crop ? { ...entry.crop, isActive: false } : { ...defaultCrop },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,

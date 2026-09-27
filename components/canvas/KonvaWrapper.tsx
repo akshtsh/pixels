@@ -47,7 +47,7 @@ export default function KonvaWrapper({
     const stageRef = useRef<Konva.Stage>(null);
     const [konvaImage, setKonvaImage] = useState<HTMLImageElement | null>(null);
 
-    // Zoom and Pan state (internal fallback if not controlled)
+    // Zoom and Pan state
     const [internalZoom, setInternalZoom] = useState(1);
     const [internalPosition, setInternalPosition] = useState({ x: 0, y: 0 });
 
@@ -119,30 +119,15 @@ export default function KonvaWrapper({
 
     if (!konvaImage) return null;
 
-    // Viewport Logic
     const isEditing = crop?.isActive;
 
-    // Crop values in Pixels (Unrotated Space)
-    const cropX = crop ? (crop.x / 100) * originalWidth : 0;
-    const cropY = crop ? (crop.y / 100) * originalHeight : 0;
-    const cropW = crop ? (crop.width / 100) * originalWidth : originalWidth;
-    const cropH = crop ? (crop.height / 100) * originalHeight : originalHeight;
+    // Stage dimensions always match the current image dimensions scaled
+    const stageWidth = originalWidth * externalScale;
+    const stageHeight = originalHeight * externalScale;
 
-    // Stage Dimensions
-    const viewW = isEditing ? originalWidth : cropW;
-    const viewH = isEditing ? originalHeight : cropH;
-
-    const stageWidth = viewW * externalScale;
-    const stageHeight = viewH * externalScale;
-
-    const shiftX = isEditing ? 0 : -cropX;
-    const shiftY = isEditing ? 0 : -cropY;
-
-    const safeZoneCenterX = originalWidth / 2;
-    const safeZoneCenterY = originalHeight / 2;
-
-    const imgX = (shiftX + safeZoneCenterX) * externalScale;
-    const imgY = (shiftY + safeZoneCenterY) * externalScale;
+    // Center image on the stage
+    const imgX = (originalWidth / 2) * externalScale;
+    const imgY = (originalHeight / 2) * externalScale;
 
     const totalRotation = rotation + straighten;
 
@@ -195,7 +180,7 @@ function CropTool({
     height,
     crop,
     onUpdate,
-    scale
+    scale,
 }: {
     width: number;
     height: number;
@@ -213,29 +198,52 @@ function CropTool({
     const shapeRef = useRef<Konva.Rect>(null);
     const trRef = useRef<Konva.Transformer>(null);
 
-    const x = (crop.x / 100) * width * scale;
-    const y = (crop.y / 100) * height * scale;
-    const w = (crop.width / 100) * width * scale;
-    const h = (crop.height / 100) * height * scale;
-
     const scaledWidth = width * scale;
     const scaledHeight = height * scale;
 
-    // Handle size based on scale
-    const handleSize = Math.max(8, Math.min(14, 10 / scale));
-    const edgeHandleLength = Math.max(20, Math.min(36, 28 / scale));
+    const initialX = (crop.x / 100) * scaledWidth;
+    const initialY = (crop.y / 100) * scaledHeight;
+    const initialW = (crop.width / 100) * scaledWidth;
+    const initialH = (crop.height / 100) * scaledHeight;
 
+    // Local state for smooth 60fps real-time updates without React store thrashing
+    const [liveBox, setLiveBox] = useState({
+        x: initialX,
+        y: initialY,
+        width: initialW,
+        height: initialH,
+    });
+
+    // Keep liveBox synced when crop props change (e.g., aspect ratio clicked)
+    useEffect(() => {
+        const nx = (crop.x / 100) * scaledWidth;
+        const ny = (crop.y / 100) * scaledHeight;
+        const nw = (crop.width / 100) * scaledWidth;
+        const nh = (crop.height / 100) * scaledHeight;
+        setLiveBox({ x: nx, y: ny, width: nw, height: nh });
+
+        if (shapeRef.current) {
+            shapeRef.current.position({ x: nx, y: ny });
+            shapeRef.current.width(nw);
+            shapeRef.current.height(nh);
+            shapeRef.current.scaleX(1);
+            shapeRef.current.scaleY(1);
+        }
+    }, [crop.x, crop.y, crop.width, crop.height, scaledWidth, scaledHeight]);
+
+    // Attach transformer to shape
     useEffect(() => {
         if (crop.isActive && trRef.current && shapeRef.current) {
             trRef.current.nodes([shapeRef.current]);
             trRef.current.getLayer()?.batchDraw();
         }
-    }, [crop.isActive]);
+    }, [crop.isActive, crop.aspectRatio]);
 
     // Aspect Ratio Logic
     useEffect(() => {
         if (crop.isActive && crop.aspectRatio !== 'free') {
             const [rW, rH] = crop.aspectRatio.split(':').map(Number);
+            if (!rW || !rH) return;
             const targetRatio = rW / rH;
 
             let newW = width;
@@ -246,7 +254,7 @@ function CropTool({
                 newW = newH * targetRatio;
             }
 
-            // Center it
+            // Center
             const newX = (width - newW) / 2;
             const newY = (height - newH) / 2;
 
@@ -254,22 +262,48 @@ function CropTool({
                 x: (newX / width) * 100,
                 y: (newY / height) * 100,
                 width: (newW / width) * 100,
-                height: (newH / height) * 100
+                height: (newH / height) * 100,
             });
         }
     }, [crop.aspectRatio, width, height]);
 
-
     if (!crop.isActive) return null;
+
+    // Real-time update during drag
+    const handleDragMove = () => {
+        const node = shapeRef.current;
+        if (!node) return;
+        setLiveBox({
+            x: node.x(),
+            y: node.y(),
+            width: node.width() * node.scaleX(),
+            height: node.height() * node.scaleY(),
+        });
+    };
 
     const handleDragEnd = () => {
         const node = shapeRef.current;
         if (!node) return;
 
-        const newX = (node.x() / scaledWidth) * 100;
-        const newY = (node.y() / scaledHeight) * 100;
+        const newX = Math.max(0, Math.min(scaledWidth, node.x()));
+        const newY = Math.max(0, Math.min(scaledHeight, node.y()));
 
-        onUpdate({ x: newX, y: newY });
+        onUpdate({
+            x: (newX / scaledWidth) * 100,
+            y: (newY / scaledHeight) * 100,
+        });
+    };
+
+    // Real-time update during resize / transform
+    const handleTransform = () => {
+        const node = shapeRef.current;
+        if (!node) return;
+        setLiveBox({
+            x: node.x(),
+            y: node.y(),
+            width: Math.max(20, node.width() * node.scaleX()),
+            height: Math.max(20, node.height() * node.scaleY()),
+        });
     };
 
     const handleTransformEnd = () => {
@@ -282,16 +316,21 @@ function CropTool({
         node.scaleX(1);
         node.scaleY(1);
 
-        const newW = (node.width() * scaleX / scaledWidth) * 100;
-        const newH = (node.height() * scaleY / scaledHeight) * 100;
-        const newX = (node.x() / scaledWidth) * 100;
-        const newY = (node.y() / scaledHeight) * 100;
+        const finalW = Math.max(20, node.width() * scaleX);
+        const finalH = Math.max(20, node.height() * scaleY);
+        const finalX = Math.max(0, Math.min(scaledWidth - finalW, node.x()));
+        const finalY = Math.max(0, Math.min(scaledHeight - finalH, node.y()));
+
+        node.width(finalW);
+        node.height(finalH);
+        node.x(finalX);
+        node.y(finalY);
 
         onUpdate({
-            x: newX,
-            y: newY,
-            width: newW,
-            height: newH,
+            x: (finalX / scaledWidth) * 100,
+            y: (finalY / scaledHeight) * 100,
+            width: (finalW / scaledWidth) * 100,
+            height: (finalH / scaledHeight) * 100,
         });
     };
 
@@ -310,104 +349,112 @@ function CropTool({
         if (newBox.y + newBox.height > scaledHeight) {
             newBox.height = scaledHeight - newBox.y;
         }
-        // Minimum size
-        if (newBox.width < 20) newBox.width = 20;
-        if (newBox.height < 20) newBox.height = 20;
+        if (newBox.width < 24) newBox.width = 24;
+        if (newBox.height < 24) newBox.height = 24;
         return newBox;
     };
 
-    // Rule of thirds grid lines
-    const thirdW = w / 3;
-    const thirdH = h / 3;
-
-    // Corner handle dimensions
-    const cornerLen = Math.min(handleSize * 2.5, w / 4, h / 4);
-    const cornerThick = Math.max(2, 3 / scale);
+    // Thirds grid lines based on liveBox
+    const thirdW = liveBox.width / 3;
+    const thirdH = liveBox.height / 3;
 
     return (
         <Group>
-            {/* Dark overlay (4 rects around crop area) */}
-            <Group>
-                <Rect x={0} y={0} width={scaledWidth} height={y} fill="black" opacity={0.55} listening={false} />
-                <Rect x={0} y={y + h} width={scaledWidth} height={scaledHeight - (y + h)} fill="black" opacity={0.55} listening={false} />
-                <Rect x={0} y={y} width={x} height={h} fill="black" opacity={0.55} listening={false} />
-                <Rect x={x + w} y={y} width={scaledWidth - (x + w)} height={h} fill="black" opacity={0.55} listening={false} />
+            {/* Dimmed backdrop around crop box (4 rects) */}
+            <Group listening={false}>
+                <Rect x={0} y={0} width={scaledWidth} height={Math.max(0, liveBox.y)} fill="black" opacity={0.6} />
+                <Rect
+                    x={0}
+                    y={Math.min(scaledHeight, liveBox.y + liveBox.height)}
+                    width={scaledWidth}
+                    height={Math.max(0, scaledHeight - (liveBox.y + liveBox.height))}
+                    fill="black"
+                    opacity={0.6}
+                />
+                <Rect
+                    x={0}
+                    y={Math.max(0, liveBox.y)}
+                    width={Math.max(0, liveBox.x)}
+                    height={Math.max(0, liveBox.height)}
+                    fill="black"
+                    opacity={0.6}
+                />
+                <Rect
+                    x={Math.min(scaledWidth, liveBox.x + liveBox.width)}
+                    y={Math.max(0, liveBox.y)}
+                    width={Math.max(0, scaledWidth - (liveBox.x + liveBox.width))}
+                    height={Math.max(0, liveBox.height)}
+                    fill="black"
+                    opacity={0.6}
+                />
             </Group>
 
-            {/* Draggable crop region */}
+            {/* Draggable interactive crop region */}
             <Rect
                 ref={shapeRef}
-                x={x}
-                y={y}
-                width={w}
-                height={h}
-                fill="transparent"
+                x={initialX}
+                y={initialY}
+                width={initialW}
+                height={initialH}
+                fill="rgba(255, 255, 255, 0.001)" // Non-zero alpha guarantees pointer hit detection everywhere inside
+                stroke="#FFFFFF"
+                strokeWidth={1.5}
                 draggable
+                onDragMove={handleDragMove}
                 onDragEnd={handleDragEnd}
+                onTransform={handleTransform}
                 onTransformEnd={handleTransformEnd}
                 dragBoundFunc={(pos) => {
-                    const newX = Math.max(0, Math.min(scaledWidth - w, pos.x));
-                    const newY = Math.max(0, Math.min(scaledHeight - h, pos.y));
+                    const newX = Math.max(0, Math.min(scaledWidth - liveBox.width, pos.x));
+                    const newY = Math.max(0, Math.min(scaledHeight - liveBox.height, pos.y));
                     return { x: newX, y: newY };
+                }}
+                onMouseEnter={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'move';
+                }}
+                onMouseLeave={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'default';
                 }}
             />
 
-            {/* Crop border */}
-            <Rect
-                x={x}
-                y={y}
-                width={w}
-                height={h}
-                stroke="white"
-                strokeWidth={1.5}
-                listening={false}
-            />
-
-            {/* Rule of thirds grid */}
-            <Group listening={false} opacity={0.4}>
-                <Rect x={x + thirdW} y={y} width={0.5} height={h} fill="white" />
-                <Rect x={x + thirdW * 2} y={y} width={0.5} height={h} fill="white" />
-                <Rect x={x} y={y + thirdH} width={w} height={0.5} fill="white" />
-                <Rect x={x} y={y + thirdH * 2} width={w} height={0.5} fill="white" />
+            {/* Rule of thirds grid inside crop box */}
+            <Group listening={false} opacity={0.45}>
+                <Rect x={liveBox.x + thirdW} y={liveBox.y} width={1} height={liveBox.height} fill="white" />
+                <Rect x={liveBox.x + thirdW * 2} y={liveBox.y} width={1} height={liveBox.height} fill="white" />
+                <Rect x={liveBox.x} y={liveBox.y + thirdH} width={liveBox.width} height={1} fill="white" />
+                <Rect x={liveBox.x} y={liveBox.y + thirdH * 2} width={liveBox.width} height={1} fill="white" />
             </Group>
 
-            {/* Corner handles - L-shaped golden handles */}
-            <Group listening={false}>
-                {/* Top-Left */}
-                <Rect x={x - cornerThick / 2} y={y - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x - cornerThick / 2} y={y - cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
-
-                {/* Top-Right */}
-                <Rect x={x + w - cornerLen + cornerThick / 2} y={y - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x + w - cornerThick / 2} y={y - cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
-
-                {/* Bottom-Left */}
-                <Rect x={x - cornerThick / 2} y={y + h - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x - cornerThick / 2} y={y + h - cornerLen + cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
-
-                {/* Bottom-Right */}
-                <Rect x={x + w - cornerLen + cornerThick / 2} y={y + h - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x + w - cornerThick / 2} y={y + h - cornerLen + cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
-
-                {/* Edge midpoint handles */}
-                <Rect x={x + w / 2 - edgeHandleLength / 2} y={y - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x + w / 2 - edgeHandleLength / 2} y={y + h - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
-                <Rect x={x + w - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
-            </Group>
-
-            {/* Transformer */}
+            {/* Transformer with bold, responsive, neobrutalist yellow-gold handles */}
             <Transformer
                 ref={trRef}
                 rotateEnabled={false}
                 keepRatio={crop.aspectRatio !== 'free'}
+                enabledAnchors={
+                    crop.aspectRatio === 'free'
+                        ? [
+                              'top-left',
+                              'top-center',
+                              'top-right',
+                              'middle-right',
+                              'bottom-right',
+                              'bottom-center',
+                              'bottom-left',
+                              'middle-left',
+                          ]
+                        : ['top-left', 'top-right', 'bottom-right', 'bottom-left']
+                }
                 boundBoxFunc={boundBoxFunc}
-                ignoreStroke
-                borderEnabled={false}
-                anchorSize={handleSize}
-                anchorStroke="transparent"
-                anchorFill="transparent"
-                anchorCornerRadius={0}
+                anchorSize={16}
+                anchorStroke="#000000"
+                anchorStrokeWidth={2}
+                anchorFill="#FFD700"
+                anchorCornerRadius={2}
+                borderStroke="#FFFFFF"
+                borderStrokeWidth={2}
+                borderDash={[6, 4]}
             />
         </Group>
     );
