@@ -5,12 +5,12 @@ import dynamic from 'next/dynamic';
 import { useEditorStore } from '@/lib/store';
 import { computeCanvasStyles, computeVignetteStyle, getGrainOpacity } from '@/lib/filters';
 import { cn } from '@/lib/utils';
-import { Upload, ImageIcon, ZoomIn, ZoomOut, Maximize, Eye } from 'lucide-react';
+import { Upload, ImageIcon, ZoomIn, ZoomOut, Maximize, Eye, Columns } from 'lucide-react';
 
-// Dynamic import of the Konva wrapper to disable SSR for the entire canvas logic
+// Dynamic import of Konva wrapper to disable SSR
 const KonvaWrapper = dynamic(() => import('./canvas/KonvaWrapper'), { ssr: false });
 
-// HEIC Converter (dynamic import to avoid SSR issues)
+// HEIC Converter
 const loadHeic2Any = () => import('heic2any');
 
 export default function Canvas() {
@@ -22,89 +22,152 @@ export default function Canvas() {
     const updateCrop = useEditorStore((state) => state.updateCrop);
 
     const [isDragging, setIsDragging] = useState(false);
-    const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
     const [scale, setScale] = useState(1);
+    const [zoom, setZoom] = useState(1);
+    const [position, setPosition] = useState({ x: 0, y: 0 });
 
-    // Compare mode (press and hold to see original)
+    // Compare mode
     const [showOriginal, setShowOriginal] = useState(false);
+    const [splitCompare, setSplitCompare] = useState(false);
+    const [splitPos, setSplitPos] = useState(50); // 0 to 100%
+    const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+    const splitContainerRef = useRef<HTMLDivElement>(null);
 
-    // Initial fit to screen, but allow overflow
+    // Auto-fit function
+    const handleFitToScreen = useCallback(() => {
+        if (containerRef.current && image.originalWidth && image.originalHeight) {
+            const { clientWidth, clientHeight } = containerRef.current;
+            const padding = 64; // comfortable breathing margin
+            const availW = Math.max(100, clientWidth - padding);
+            const availH = Math.max(100, clientHeight - padding);
+
+            const scaleX = availW / image.originalWidth;
+            const scaleY = availH / image.originalHeight;
+            const fitScale = Math.min(scaleX, scaleY, 1);
+
+            setScale(fitScale);
+            setZoom(1);
+            setPosition({ x: 0, y: 0 });
+        }
+    }, [image.originalWidth, image.originalHeight]);
+
+    // Recalculate auto-fit when image changes or dimensions change
     useEffect(() => {
-        const updateSize = () => {
-            if (containerRef.current && image.originalWidth) {
-                const { clientWidth, clientHeight } = containerRef.current;
+        if (image.src && image.originalWidth && image.originalHeight) {
+            handleFitToScreen();
+        }
+    }, [image.src, image.originalWidth, image.originalHeight, handleFitToScreen]);
 
-                // Only calculate initial scale if we haven't touched it (or maybe just once on image load?)
-                // For now, let's just default to fitting the ORIGINAL image to screen if it's huge, 
-                // but allow it to be larger if the user zooms.
-                // Actually, the user wants "variable and as big as uploaded".
-                // Let's set initial scale to 1 if it fits, or fit down if it's too big?
-                // Or just start with "Fit" but don't re-trigger on crop?
+    // Window resize handler
+    useEffect(() => {
+        const onResize = () => {
+            if (zoom === 1) {
+                handleFitToScreen();
+            }
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+    }, [zoom, handleFitToScreen]);
 
-                // Calculate fit scale for full image
-                const scaleX = (clientWidth - 40) / image.originalWidth;
-                const scaleY = (clientHeight - 40) / image.originalHeight;
-                const fitScale = Math.min(scaleX, scaleY, 1);
+    const handleZoomIn = () => {
+        setZoom((prev) => Math.min(8, Number((prev * 1.25).toFixed(2))));
+    };
 
-                // If scale is unset (1), set it to fitScale?
-                // Or just rely on user zoom?
-                // Let's set the base externalScale to 1 always, and let KonvaWrapper handle Zoom?
-                // KonvaWrapper multiplies externalScale * zoom.
-                // If we set externalScale = 1, then zoom=1 means 100%.
-                // If we set externalScale = fitScale, then zoom=1 means Fit.
+    const handleZoomOut = () => {
+        setZoom((prev) => Math.max(0.15, Number((prev / 1.25).toFixed(2))));
+    };
 
-                // Let's stick with fitScale as base, but NOT update it on crop.
-                if (scale === 1) { // Only set if default?
-                    setScale(fitScale);
+    const handleResetZoom100 = () => {
+        setZoom(1);
+        setPosition({ x: 0, y: 0 });
+    };
+
+    // Split slider drag handling
+    const handleSplitMove = useCallback(
+        (clientX: number) => {
+            if (!splitContainerRef.current) return;
+            const rect = splitContainerRef.current.getBoundingClientRect();
+            const relX = clientX - rect.left;
+            const percentage = Math.max(0, Math.min(100, (relX / rect.width) * 100));
+            setSplitPos(percentage);
+        },
+        []
+    );
+
+    const handleSplitMouseDown = (e: React.MouseEvent) => {
+        e.preventDefault();
+        setIsDraggingSplit(true);
+        handleSplitMove(e.clientX);
+    };
+
+    useEffect(() => {
+        const onMouseMove = (e: MouseEvent) => {
+            if (isDraggingSplit) {
+                handleSplitMove(e.clientX);
+            }
+        };
+        const onMouseUp = () => {
+            if (isDraggingSplit) {
+                setIsDraggingSplit(false);
+            }
+        };
+
+        if (isDraggingSplit) {
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+        }
+        return () => {
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+    }, [isDraggingSplit, handleSplitMove]);
+
+    const processFile = useCallback(
+        async (file: File) => {
+            let blob: Blob = file;
+            let fileName = file.name;
+
+            const isHeic =
+                file.type === 'image/heic' ||
+                file.type === 'image/heif' ||
+                file.name.toLowerCase().endsWith('.heic') ||
+                file.name.toLowerCase().endsWith('.heif');
+
+            if (isHeic) {
+                try {
+                    const heic2any = (await loadHeic2Any()).default;
+                    const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
+                    blob = Array.isArray(converted) ? converted[0] : converted;
+                    fileName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
+                } catch (err) {
+                    console.error('HEIC conversion failed:', err);
                 }
             }
-        };
 
-        updateSize();
-        window.addEventListener('resize', updateSize);
-        return () => window.removeEventListener('resize', updateSize);
-    }, [image.originalWidth, image.originalHeight]); // Removed crop dependency
-
-    const processFile = useCallback(async (file: File) => {
-        let blob: Blob = file;
-        let fileName = file.name;
-
-        // Check for HEIC/HEIF
-        const isHeic = file.type === 'image/heic' || file.type === 'image/heif' ||
-            file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif');
-
-        if (isHeic) {
-            try {
-                const heic2any = (await loadHeic2Any()).default;
-                const converted = await heic2any({ blob: file, toType: 'image/jpeg', quality: 0.9 });
-                blob = Array.isArray(converted) ? converted[0] : converted;
-                fileName = file.name.replace(/\.(heic|heif)$/i, '.jpg');
-            } catch (err) {
-                console.error('HEIC conversion failed:', err);
-                // Fall through to try loading as-is
-            }
-        }
-
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const img = new window.Image();
-            img.onload = () => {
-                setImage(event.target?.result as string, img.width, img.height, fileName);
-                // Reset scale on new image? Handled by useEffect dependency?
-                // We might need to force reset scale.
-                // But useEffect [image.originalWidth] handles it.
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new window.Image();
+                img.onload = () => {
+                    setImage(event.target?.result as string, img.width, img.height, fileName);
+                };
+                img.src = event.target?.result as string;
             };
-            img.src = event.target?.result as string;
-        };
-        reader.readAsDataURL(blob);
-    }, [setImage]);
+            reader.readAsDataURL(blob);
+        },
+        [setImage]
+    );
 
     const handleDrop = useCallback(
         async (e: React.DragEvent) => {
             e.preventDefault();
             setIsDragging(false);
             const file = e.dataTransfer.files[0];
-            if (file && (file.type.startsWith('image/') || file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif'))) {
+            if (
+                file &&
+                (file.type.startsWith('image/') ||
+                    file.name.toLowerCase().endsWith('.heic') ||
+                    file.name.toLowerCase().endsWith('.heif'))
+            ) {
                 await processFile(file);
             }
         },
@@ -134,12 +197,12 @@ export default function Canvas() {
         <div
             ref={containerRef}
             className={cn(
-                'flex-1 flex items-center justify-center relative overflow-auto bg-[#dab495]', // Beige background
+                'flex-1 flex items-center justify-center relative overflow-hidden bg-[#dab495] select-none',
                 isDragging && 'bg-editor-surface'
             )}
             style={{
-                backgroundImage: 'radial-gradient(#000000 1.5px, transparent 1.5px)', // Black dots
-                backgroundSize: '24px 24px'
+                backgroundImage: 'radial-gradient(#000000 1.5px, transparent 1.5px)',
+                backgroundSize: '24px 24px',
             }}
             onDrop={handleDrop}
             onDragOver={handleDragOver}
@@ -147,8 +210,12 @@ export default function Canvas() {
         >
             {image.src ? (
                 <>
-                    <div className="relative shadow-2xl ring-1 ring-white/10">
-                        <div style={containerStyle}>
+                    <div
+                        ref={splitContainerRef}
+                        className="relative shadow-[4px_4px_0_0_#000] border-2 border-editor-border bg-black/10 overflow-hidden"
+                    >
+                        {/* Normal / Single Mode or Original Side of Split Mode */}
+                        <div style={splitCompare ? {} : containerStyle}>
                             <KonvaWrapper
                                 imageSrc={image.src}
                                 originalWidth={image.originalWidth}
@@ -160,81 +227,200 @@ export default function Canvas() {
                                 rotation={adjustments.rotation}
                                 straighten={adjustments.straighten}
                                 straightenScale={adjustments.straightenScale}
+                                zoom={zoom}
+                                onZoomChange={setZoom}
+                                position={position}
+                                onPositionChange={setPosition}
+                                interactive={!isDraggingSplit}
                             />
                         </div>
 
-                        {!showOriginal && adjustments.vignette !== 0 && (
+                        {/* Effects overlays in Single Mode */}
+                        {!splitCompare && !showOriginal && adjustments.vignette !== 0 && (
                             <div
                                 className="absolute inset-0 pointer-events-none"
                                 style={computeVignetteStyle(adjustments.vignette)}
                             />
                         )}
 
-                        {!showOriginal && adjustments.grain > 0 && (
+                        {!splitCompare && !showOriginal && adjustments.grain > 0 && (
                             <div
                                 className="absolute inset-0 pointer-events-none mix-blend-overlay"
                                 style={{
                                     opacity: getGrainOpacity(adjustments.grain),
-                                    backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
+                                    backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
                                 }}
                             />
                         )}
+
+                        {/* Split Compare Mode: Edited Overlay with Clip-Path */}
+                        {splitCompare && (
+                            <>
+                                <div
+                                    className="absolute inset-0 pointer-events-none"
+                                    style={{
+                                        clipPath: `inset(0 0 0 ${splitPos}%)`,
+                                    }}
+                                >
+                                    <div style={containerStyle} className="w-full h-full">
+                                        <KonvaWrapper
+                                            imageSrc={image.src}
+                                            originalWidth={image.originalWidth}
+                                            originalHeight={image.originalHeight}
+                                            scale={scale}
+                                            crop={crop}
+                                            rotation={adjustments.rotation}
+                                            straighten={adjustments.straighten}
+                                            straightenScale={adjustments.straightenScale}
+                                            zoom={zoom}
+                                            position={position}
+                                            interactive={false}
+                                        />
+                                    </div>
+
+                                    {adjustments.vignette !== 0 && (
+                                        <div
+                                            className="absolute inset-0 pointer-events-none"
+                                            style={computeVignetteStyle(adjustments.vignette)}
+                                        />
+                                    )}
+
+                                    {adjustments.grain > 0 && (
+                                        <div
+                                            className="absolute inset-0 pointer-events-none mix-blend-overlay"
+                                            style={{
+                                                opacity: getGrainOpacity(adjustments.grain),
+                                                backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E")`,
+                                            }}
+                                        />
+                                    )}
+                                </div>
+
+                                {/* Split Slider Divider Line & Handle */}
+                                <div
+                                    className="absolute top-0 bottom-0 z-30 cursor-ew-resize group"
+                                    style={{ left: `${splitPos}%`, transform: 'translateX(-50%)' }}
+                                    onMouseDown={handleSplitMouseDown}
+                                >
+                                    {/* Line */}
+                                    <div className="w-1 h-full bg-white shadow-[0_0_4px_rgba(0,0,0,0.8)] mx-auto" />
+
+                                    {/* Center Handle Button */}
+                                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center w-8 h-8 rounded-full bg-yellow-300 border-2 border-black shadow-[2px_2px_0_0_#000] cursor-ew-resize transition-transform duration-100 group-hover:scale-110">
+                                        <div className="flex items-center text-[10px] font-black text-black select-none pointer-events-none">
+                                            ◀▶
+                                        </div>
+                                    </div>
+
+                                    {/* Badges on left and right */}
+                                    <div className="absolute top-3 right-3 px-2 py-0.5 bg-black/80 text-white text-[10px] font-bold uppercase tracking-wider rounded pointer-events-none border border-white/20">
+                                        Before
+                                    </div>
+                                    <div className="absolute top-3 left-3 px-2 py-0.5 bg-yellow-300 text-black text-[10px] font-bold uppercase tracking-wider rounded pointer-events-none border border-black shadow-[1px_1px_0_0_#000]">
+                                        After
+                                    </div>
+                                </div>
+                            </>
+                        )}
                     </div>
 
-                    {/* Floating Controls */}
-                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-2 p-2 bg-editor-surface/90 backdrop-blur-sm border border-editor-border rounded-lg shadow-lg">
+                    {/* Floating Navigation Controls */}
+                    <div className="absolute bottom-5 left-1/2 -translate-x-1/2 flex items-center gap-1.5 p-1.5 bg-editor-surface border-2 border-editor-border shadow-[3px_3px_0_0_#000] z-40">
+                        {/* Zoom Out */}
                         <button
-                            className="p-2 hover:bg-editor-borderLight rounded transition-colors text-editor-text"
+                            onClick={handleZoomOut}
+                            className="p-1.5 bg-white border border-editor-border hover:bg-yellow-100 transition-colors text-editor-text shadow-[1px_1px_0_0_#000] active:translate-y-px active:shadow-none"
                             title="Zoom Out"
                         >
-                            <ZoomOut size={18} />
+                            <ZoomOut size={16} />
                         </button>
+
+                        {/* Fit to Screen / Auto-fit */}
                         <button
-                            className="p-2 hover:bg-editor-borderLight rounded transition-colors text-editor-text"
-                            title="Fit to Screen"
+                            onClick={handleFitToScreen}
+                            className="flex items-center gap-1 px-2 py-1 bg-white border border-editor-border hover:bg-yellow-100 transition-colors text-editor-text text-xs font-bold uppercase shadow-[1px_1px_0_0_#000] active:translate-y-px active:shadow-none"
+                            title="Fit to Screen (Auto-Fit)"
                         >
-                            <Maximize size={18} />
+                            <Maximize size={14} />
+                            <span>Auto Fit</span>
                         </button>
+
+                        {/* Zoom In */}
                         <button
-                            className="p-2 hover:bg-editor-borderLight rounded transition-colors text-editor-text"
+                            onClick={handleZoomIn}
+                            className="p-1.5 bg-white border border-editor-border hover:bg-yellow-100 transition-colors text-editor-text shadow-[1px_1px_0_0_#000] active:translate-y-px active:shadow-none"
                             title="Zoom In"
                         >
-                            <ZoomIn size={18} />
+                            <ZoomIn size={16} />
                         </button>
-                        <div className="w-px h-6 bg-editor-border mx-1" />
+
+                        {/* Zoom Level Indicator */}
+                        <button
+                            onClick={handleResetZoom100}
+                            className="px-2 py-1 text-xs font-mono font-bold bg-yellow-100 border border-editor-border text-editor-text hover:bg-yellow-200 transition-colors shadow-[1px_1px_0_0_#000]"
+                            title="Click to reset zoom to 100%"
+                        >
+                            {Math.round(zoom * 100)}%
+                        </button>
+
+                        <div className="w-0.5 h-6 bg-editor-border mx-1" />
+
+                        {/* Hold to Compare (Eye) */}
                         <button
                             className={cn(
-                                "p-2 rounded transition-colors",
-                                showOriginal ? "bg-editor-accent text-white" : "hover:bg-editor-borderLight text-editor-text"
+                                'p-1.5 border border-editor-border transition-all duration-150 shadow-[1px_1px_0_0_#000]',
+                                showOriginal
+                                    ? 'bg-editor-accent text-white shadow-none translate-y-px'
+                                    : 'bg-white hover:bg-yellow-100 text-editor-text'
                             )}
-                            title="Compare (hold to see original)"
+                            title="Compare: Hold to see Original"
                             onMouseDown={() => setShowOriginal(true)}
                             onMouseUp={() => setShowOriginal(false)}
                             onMouseLeave={() => setShowOriginal(false)}
+                            onTouchStart={() => setShowOriginal(true)}
+                            onTouchEnd={() => setShowOriginal(false)}
                         >
-                            <Eye size={18} />
+                            <Eye size={16} />
+                        </button>
+
+                        {/* Split Slider Compare Mode Toggle */}
+                        <button
+                            onClick={() => setSplitCompare((prev) => !prev)}
+                            className={cn(
+                                'flex items-center gap-1 px-2.5 py-1 text-xs font-bold uppercase border border-editor-border transition-all duration-150 shadow-[1px_1px_0_0_#000]',
+                                splitCompare
+                                    ? 'bg-yellow-300 text-editor-text'
+                                    : 'bg-white hover:bg-yellow-100 text-editor-text'
+                            )}
+                            title="Before & After Split Slider"
+                        >
+                            <Columns size={14} />
+                            <span>{splitCompare ? 'Exit Split' : 'Split View'}</span>
                         </button>
                     </div>
                 </>
             ) : (
                 <label
                     className={cn(
-                        'flex flex-col items-center justify-center gap-4 p-12 rounded-lg cursor-pointer',
-                        'border-2 border-dashed transition-all duration-200',
-                        isDragging
-                            ? 'border-editor-accent bg-editor-accent/10'
-                            : 'border-editor-border hover:border-editor-borderLight hover:bg-editor-surface/50'
+                        'flex flex-col items-center justify-center gap-4 p-12 cursor-pointer bg-editor-surface',
+                        'border-4 border-dashed border-editor-border shadow-[6px_6px_0_0_#000] hover:shadow-[3px_3px_0_0_#000] hover:translate-y-0.5',
+                        'transition-all duration-200',
+                        isDragging && 'bg-yellow-100 border-editor-accent'
                     )}
                 >
-                    <div className="flex items-center justify-center w-16 h-16 rounded-full bg-editor-surface">
-                        {isDragging ? <Upload size={28} className="text-editor-accent" /> : <ImageIcon size={28} className="text-editor-textMuted" />}
+                    <div className="flex items-center justify-center w-20 h-20 bg-yellow-300 border-2 border-editor-border shadow-[3px_3px_0_0_#000]">
+                        {isDragging ? (
+                            <Upload size={36} className="text-editor-text" />
+                        ) : (
+                            <ImageIcon size={36} className="text-editor-text" />
+                        )}
                     </div>
                     <div className="text-center">
-                        <p className="text-sm font-medium text-editor-text">
-                            {isDragging ? 'Drop your image here' : 'Drop an image or click to upload'}
+                        <p className="text-base font-black uppercase tracking-wider text-editor-text">
+                            {isDragging ? 'Drop Image Here' : 'Drop Image or Click to Upload'}
                         </p>
-                        <p className="text-xs text-editor-textMuted mt-1">
-                            Supports JPEG, PNG, HEIC, and more
+                        <p className="text-xs font-semibold text-editor-textMuted mt-1">
+                            Supports JPEG, PNG, WEBP, HEIC, and more
                         </p>
                     </div>
                     <input

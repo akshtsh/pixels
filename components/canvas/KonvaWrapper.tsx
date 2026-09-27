@@ -20,6 +20,11 @@ interface KonvaWrapperProps {
     rotation?: number;
     straighten?: number;
     straightenScale?: number;
+    zoom?: number;
+    onZoomChange?: (zoom: number) => void;
+    position?: { x: number; y: number };
+    onPositionChange?: (pos: { x: number; y: number }) => void;
+    interactive?: boolean;
 }
 
 export default function KonvaWrapper({
@@ -32,14 +37,32 @@ export default function KonvaWrapper({
     onUpdateCrop,
     rotation = 0,
     straighten = 0,
-    straightenScale = 1
+    straightenScale = 1,
+    zoom: controlledZoom,
+    onZoomChange,
+    position: controlledPosition,
+    onPositionChange,
+    interactive = true,
 }: KonvaWrapperProps) {
     const stageRef = useRef<Konva.Stage>(null);
     const [konvaImage, setKonvaImage] = useState<HTMLImageElement | null>(null);
 
-    // Zoom and Pan state
-    const [zoom, setZoom] = useState(1);
-    const [position, setPosition] = useState({ x: 0, y: 0 });
+    // Zoom and Pan state (internal fallback if not controlled)
+    const [internalZoom, setInternalZoom] = useState(1);
+    const [internalPosition, setInternalPosition] = useState({ x: 0, y: 0 });
+
+    const zoom = controlledZoom !== undefined ? controlledZoom : internalZoom;
+    const position = controlledPosition !== undefined ? controlledPosition : internalPosition;
+
+    const setZoom = (newZoom: number) => {
+        setInternalZoom(newZoom);
+        onZoomChange?.(newZoom);
+    };
+
+    const setPosition = (newPos: { x: number; y: number }) => {
+        setInternalPosition(newPos);
+        onPositionChange?.(newPos);
+    };
 
     useEffect(() => {
         if (imageSrc) {
@@ -54,11 +77,16 @@ export default function KonvaWrapper({
 
     // Reset zoom and position when image changes
     useEffect(() => {
-        setZoom(1);
-        setPosition({ x: 0, y: 0 });
-    }, [imageSrc]);
+        if (controlledZoom === undefined) {
+            setInternalZoom(1);
+        }
+        if (controlledPosition === undefined) {
+            setInternalPosition({ x: 0, y: 0 });
+        }
+    }, [imageSrc, controlledZoom, controlledPosition]);
 
     const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+        if (!interactive) return;
         e.evt.preventDefault();
         const scaleBy = 1.1;
         const stage = stageRef.current;
@@ -83,6 +111,7 @@ export default function KonvaWrapper({
     };
 
     const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+        if (!interactive) return;
         if (e.target.name() === 'stage-drag') {
             setPosition({ x: e.target.x(), y: e.target.y() });
         }
@@ -100,26 +129,18 @@ export default function KonvaWrapper({
     const cropH = crop ? (crop.height / 100) * originalHeight : originalHeight;
 
     // Stage Dimensions
-    // Result View: Size matches the crop dimensions
-    // Edit View: Size matches the FULL Safe Zone (original image size)
     const viewW = isEditing ? originalWidth : cropW;
     const viewH = isEditing ? originalHeight : cropH;
 
     const stageWidth = viewW * externalScale;
     const stageHeight = viewH * externalScale;
 
-    // Image Position relative to Stage (0,0)
-    // If Editing: Safe Zone (0,0) aligns with Stage (0,0).
-    // If Result: Safe Zone (cropX, cropY) aligns with Stage (0,0) -> i.e., shift Safe Zone by -cropX, -cropY.
     const shiftX = isEditing ? 0 : -cropX;
     const shiftY = isEditing ? 0 : -cropY;
 
-    // Calculate center of the Safe Zone relative to its top-left (0,0)
     const safeZoneCenterX = originalWidth / 2;
     const safeZoneCenterY = originalHeight / 2;
 
-    // Image Node Position
-    // We want the Image Center (Pivot) to be at `shift + safeZoneCenter`.
     const imgX = (shiftX + safeZoneCenterX) * externalScale;
     const imgY = (shiftY + safeZoneCenterY) * externalScale;
 
@@ -130,11 +151,11 @@ export default function KonvaWrapper({
             ref={stageRef}
             width={stageWidth}
             height={stageHeight}
-            scaleX={zoom} // externalScale is applied manually to coords/sizes to allow flexible "View" logic
+            scaleX={zoom}
             scaleY={zoom}
             x={position.x}
             y={position.y}
-            draggable={!isEditing} // Pan stage when not editing crop
+            draggable={interactive && !isEditing}
             name="stage-drag"
             onWheel={handleWheel}
             onDragEnd={handleDragEnd}
@@ -154,8 +175,8 @@ export default function KonvaWrapper({
                     scaleY={straightenScale * externalScale}
                 />
 
-                {/* Crop UI (Only when editing) */}
-                {isEditing && crop && onUpdateCrop && (
+                {/* Crop UI (Only when editing and interactive) */}
+                {interactive && isEditing && crop && onUpdateCrop && (
                     <CropTool
                         width={originalWidth}
                         height={originalHeight}
@@ -313,7 +334,7 @@ function CropTool({
                 <Rect x={x + w} y={y} width={scaledWidth - (x + w)} height={h} fill="black" opacity={0.55} listening={false} />
             </Group>
 
-            {/* Draggable crop region (invisible but interactive) */}
+            {/* Draggable crop region */}
             <Rect
                 ref={shapeRef}
                 x={x}
@@ -344,10 +365,8 @@ function CropTool({
 
             {/* Rule of thirds grid */}
             <Group listening={false} opacity={0.4}>
-                {/* Vertical lines */}
                 <Rect x={x + thirdW} y={y} width={0.5} height={h} fill="white" />
                 <Rect x={x + thirdW * 2} y={y} width={0.5} height={h} fill="white" />
-                {/* Horizontal lines */}
                 <Rect x={x} y={y + thirdH} width={w} height={0.5} fill="white" />
                 <Rect x={x} y={y + thirdH * 2} width={w} height={0.5} fill="white" />
             </Group>
@@ -370,18 +389,14 @@ function CropTool({
                 <Rect x={x + w - cornerLen + cornerThick / 2} y={y + h - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
                 <Rect x={x + w - cornerThick / 2} y={y + h - cornerLen + cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
 
-                {/* Edge midpoint handles - small gold bars */}
-                {/* Top center */}
+                {/* Edge midpoint handles */}
                 <Rect x={x + w / 2 - edgeHandleLength / 2} y={y - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                {/* Bottom center */}
                 <Rect x={x + w / 2 - edgeHandleLength / 2} y={y + h - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
-                {/* Left center */}
                 <Rect x={x - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
-                {/* Right center */}
                 <Rect x={x + w - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
             </Group>
 
-            {/* Transformer (invisible anchors for resize interaction) */}
+            {/* Transformer */}
             <Transformer
                 ref={trRef}
                 rotateEnabled={false}

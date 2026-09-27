@@ -1,10 +1,10 @@
 'use client';
 
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { X, Download } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useEditorStore } from '@/lib/store';
-import { computeFilterString, computeVignetteStyle, getGrainOpacity } from '@/lib/filters';
+import { computeFilterString, getGrainOpacity } from '@/lib/filters';
 import { cn } from '@/lib/utils';
 
 export default function ExportModal() {
@@ -20,7 +20,7 @@ export default function ExportModal() {
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (exportModalOpen && image.fileName) {
             const baseName = image.fileName.replace(/\.[^/.]+$/, '');
             setFilename(`${baseName}_edited`);
@@ -62,13 +62,14 @@ export default function ExportModal() {
             ctx.save();
 
             // Apply rotation and straighten relative to cropped center
-            const totalRotation = (adjustments.rotation + adjustments.straighten) * Math.PI / 180;
+            const totalRotation = ((adjustments.rotation + adjustments.straighten) * Math.PI) / 180;
             ctx.translate(canvas.width / 2, canvas.height / 2);
             ctx.rotate(totalRotation);
             ctx.translate(-canvas.width / 2, -canvas.height / 2);
 
-            // Apply CSS filter
-            ctx.filter = computeFilterString(adjustments);
+            // Apply filter
+            const filterStr = computeFilterString(adjustments);
+            ctx.filter = filterStr;
 
             // Draw only the cropped region
             ctx.drawImage(
@@ -80,24 +81,51 @@ export default function ExportModal() {
 
             // Apply vignette if needed
             if (adjustments.vignette !== 0) {
-                const intensity = Math.abs(adjustments.vignette) / 100;
+                const intensity = Math.min(1, Math.abs(adjustments.vignette) / 100);
                 const gradient = ctx.createRadialGradient(
-                    canvas.width / 2, canvas.height / 2, 0,
-                    canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) / 1.5
+                    canvas.width / 2,
+                    canvas.height / 2,
+                    0,
+                    canvas.width / 2,
+                    canvas.height / 2,
+                    Math.max(canvas.width, canvas.height) / 1.4
                 );
 
                 if (adjustments.vignette > 0) {
                     gradient.addColorStop(0, 'rgba(0,0,0,0)');
-                    gradient.addColorStop(0.5, 'rgba(0,0,0,0)');
-                    gradient.addColorStop(1, `rgba(0,0,0,${intensity * 0.8})`);
+                    gradient.addColorStop(0.55, 'rgba(0,0,0,0)');
+                    gradient.addColorStop(1, `rgba(0,0,0,${intensity * 0.85})`);
                 } else {
                     gradient.addColorStop(0, 'rgba(255,255,255,0)');
-                    gradient.addColorStop(0.5, 'rgba(255,255,255,0)');
-                    gradient.addColorStop(1, `rgba(255,255,255,${intensity * 0.5})`);
+                    gradient.addColorStop(0.55, 'rgba(255,255,255,0)');
+                    gradient.addColorStop(1, `rgba(255,255,255,${intensity * 0.6})`);
                 }
 
                 ctx.fillStyle = gradient;
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
+            }
+
+            // Apply film grain if needed
+            if (adjustments.grain > 0) {
+                const grainCanvas = document.createElement('canvas');
+                grainCanvas.width = canvas.width;
+                grainCanvas.height = canvas.height;
+                const gCtx = grainCanvas.getContext('2d');
+                if (gCtx) {
+                    const imgData = gCtx.createImageData(canvas.width, canvas.height);
+                    const buffer = new Uint32Array(imgData.data.buffer);
+                    const grainOpacity = getGrainOpacity(adjustments.grain);
+                    const alpha = Math.round(grainOpacity * 255);
+                    for (let i = 0; i < buffer.length; i++) {
+                        const gray = (Math.random() * 255) | 0;
+                        buffer[i] = (alpha << 24) | (gray << 16) | (gray << 8) | gray;
+                    }
+                    gCtx.putImageData(imgData, 0, 0);
+                    ctx.save();
+                    ctx.globalCompositeOperation = 'overlay';
+                    ctx.drawImage(grainCanvas, 0, 0);
+                    ctx.restore();
+                }
             }
 
             // Export
@@ -137,7 +165,7 @@ export default function ExportModal() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="fixed inset-0 bg-black/60 z-40"
+                        className="fixed inset-0 bg-black/60 z-40 backdrop-blur-sm"
                         onClick={() => setExportModalOpen(false)}
                     />
 
@@ -147,17 +175,19 @@ export default function ExportModal() {
                         animate={{ opacity: 1, scale: 1, y: 0 }}
                         exit={{ opacity: 0, scale: 0.95, y: 20 }}
                         transition={{ duration: 0.2 }}
-                        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-96"
+                        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-50 w-96 select-none"
                     >
-                        <div className="bg-editor-surface rounded-lg shadow-xl border border-editor-border">
+                        <div className="bg-editor-surface border-2 border-editor-border shadow-[6px_6px_0_0_#000]">
                             {/* Header */}
-                            <div className="flex items-center justify-between px-4 py-3 border-b border-editor-border">
-                                <h2 className="text-sm font-semibold text-editor-text">Export Image</h2>
+                            <div className="flex items-center justify-between px-4 py-3 border-b-2 border-editor-border bg-yellow-300">
+                                <h2 className="text-sm font-black uppercase tracking-wider text-editor-text">
+                                    Export Image
+                                </h2>
                                 <button
                                     onClick={() => setExportModalOpen(false)}
-                                    className="p-1 rounded hover:bg-editor-surfaceHover transition-colors"
+                                    className="p-1 border border-editor-border bg-white hover:bg-red-200 transition-colors shadow-[1px_1px_0_0_#000]"
                                 >
-                                    <X size={16} className="text-editor-textMuted" />
+                                    <X size={14} className="text-editor-text" />
                                 </button>
                             </div>
 
@@ -165,7 +195,7 @@ export default function ExportModal() {
                             <div className="px-4 py-4 space-y-4">
                                 {/* Filename */}
                                 <div>
-                                    <label className="block text-xs text-editor-textMuted mb-1.5">
+                                    <label className="block text-xs font-bold uppercase tracking-wider text-editor-text mb-1.5">
                                         Filename
                                     </label>
                                     <input
@@ -173,9 +203,9 @@ export default function ExportModal() {
                                         value={filename}
                                         onChange={(e) => setFilename(e.target.value)}
                                         className={cn(
-                                            'w-full px-3 py-2 rounded text-sm',
-                                            'bg-editor-bg border border-editor-border',
-                                            'text-editor-text focus:border-editor-accent focus:outline-none',
+                                            'w-full px-3 py-2 text-sm font-mono',
+                                            'bg-white border-2 border-editor-border shadow-[2px_2px_0_0_#000]',
+                                            'text-editor-text focus:outline-none focus:bg-yellow-50',
                                             'transition-colors duration-150'
                                         )}
                                         placeholder="Enter filename"
@@ -184,7 +214,7 @@ export default function ExportModal() {
 
                                 {/* Format */}
                                 <div>
-                                    <label className="block text-xs text-editor-textMuted mb-1.5">
+                                    <label className="block text-xs font-bold uppercase tracking-wider text-editor-text mb-1.5">
                                         Format
                                     </label>
                                     <div className="flex gap-2">
@@ -193,11 +223,11 @@ export default function ExportModal() {
                                                 key={f}
                                                 onClick={() => setFormat(f)}
                                                 className={cn(
-                                                    'flex-1 py-2 rounded text-sm font-medium',
-                                                    'transition-colors duration-150',
+                                                    'flex-1 py-2 text-xs font-black uppercase tracking-wider border-2 border-editor-border shadow-[2px_2px_0_0_#000]',
+                                                    'transition-all duration-150',
                                                     format === f
-                                                        ? 'bg-editor-accent text-white'
-                                                        : 'bg-editor-border text-white hover:bg-editor-borderLight'
+                                                        ? 'bg-yellow-300 text-editor-text shadow-[1px_1px_0_0_#000] translate-y-px'
+                                                        : 'bg-white text-editor-text hover:bg-yellow-50'
                                                 )}
                                             >
                                                 {f.toUpperCase()}
@@ -210,8 +240,12 @@ export default function ExportModal() {
                                 {format === 'jpeg' && (
                                     <div>
                                         <div className="flex items-center justify-between mb-1.5">
-                                            <label className="text-xs text-editor-textMuted">Quality</label>
-                                            <span className="text-xs text-editor-text">{quality}%</span>
+                                            <label className="text-xs font-bold uppercase tracking-wider text-editor-text">
+                                                Quality
+                                            </label>
+                                            <span className="text-xs font-mono font-bold text-editor-text">
+                                                {quality}%
+                                            </span>
                                         </div>
                                         <input
                                             type="range"
@@ -226,20 +260,21 @@ export default function ExportModal() {
                             </div>
 
                             {/* Footer */}
-                            <div className="px-4 py-3 border-t border-editor-border">
+                            <div className="px-4 py-3 border-t-2 border-editor-border bg-yellow-50">
                                 <button
                                     onClick={handleExport}
                                     disabled={isExporting || !filename}
                                     className={cn(
-                                        'w-full flex items-center justify-center gap-2 py-2.5 rounded',
-                                        'text-sm font-medium transition-colors duration-150',
+                                        'w-full flex items-center justify-center gap-2 py-2.5',
+                                        'text-xs font-black uppercase tracking-wider border-2 border-editor-border shadow-[3px_3px_0_0_#000]',
+                                        'transition-all duration-150',
                                         isExporting || !filename
-                                            ? 'bg-editor-border text-editor-textDim cursor-not-allowed'
-                                            : 'bg-editor-accent text-white hover:bg-editor-accentHover'
+                                            ? 'bg-gray-200 text-gray-400 border-gray-300 shadow-none cursor-not-allowed'
+                                            : 'bg-editor-accent text-white hover:bg-red-600 hover:translate-y-px hover:shadow-[2px_2px_0_0_#000] active:translate-y-0.5 active:shadow-none'
                                     )}
                                 >
                                     <Download size={16} />
-                                    {isExporting ? 'Exporting...' : 'Export'}
+                                    <span>{isExporting ? 'Exporting...' : 'Export'}</span>
                                 </button>
                             </div>
                         </div>

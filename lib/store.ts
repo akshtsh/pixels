@@ -66,6 +66,7 @@ export interface ImageState {
 }
 
 interface HistoryEntry {
+    image: ImageState;
     adjustments: AdjustmentState;
     masks: Mask[];
     timestamp: number;
@@ -86,6 +87,7 @@ interface EditorStore {
     // Global Adjustments
     adjustments: AdjustmentState;
     updateAdjustment: (key: AdjustmentKey, value: number | string) => void;
+    setAdjustments: (newAdjustments: Partial<AdjustmentState>, pushToHistory?: boolean) => void;
     resetAdjustment: (key: AdjustmentKey) => void;
     globalReset: () => void;
 
@@ -119,11 +121,13 @@ interface EditorStore {
     // UI
     exportModalOpen: boolean;
     setExportModalOpen: (open: boolean) => void;
+    compareMode: 'none' | 'hold' | 'split';
+    setCompareMode: (mode: 'none' | 'hold' | 'split') => void;
+    splitSliderPos: number; // 0 to 100
+    setSplitSliderPos: (pos: number) => void;
 }
 
-
-
-const defaultAdjustments: AdjustmentState = {
+export const defaultAdjustments: AdjustmentState = {
     // Light
     exposure: 0,
     brilliance: 0,
@@ -178,17 +182,38 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // Image
     image: defaultImage,
     setImage: (src, width, height, fileName) => {
+        const newImage: ImageState = { src, originalWidth: width, originalHeight: height, fileName };
+        const newAdjustments = { ...defaultAdjustments };
+        const newHistory: HistoryEntry[] = [
+            {
+                image: newImage,
+                adjustments: newAdjustments,
+                masks: [],
+                timestamp: Date.now(),
+            },
+        ];
+
         set({
-            image: { src, originalWidth: width, originalHeight: height, fileName },
+            image: newImage,
+            adjustments: newAdjustments,
+            crop: { ...defaultCrop },
+            masks: [],
+            activeMaskId: null,
+            history: newHistory,
+            historyIndex: 0,
+        });
+    },
+    clearImage: () => {
+        set({
+            image: defaultImage,
             adjustments: { ...defaultAdjustments },
+            crop: { ...defaultCrop },
             masks: [],
             activeMaskId: null,
             history: [],
             historyIndex: -1,
         });
-        get().pushHistory();
     },
-    clearImage: () => set({ image: defaultImage }),
 
     // Tools
     activeTool: 'move',
@@ -202,9 +227,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             adjustments: { ...state.adjustments, [key]: value },
         }));
-        // Note: For fine-grained history, we push on slider release (mouseUp) 
-        // rather than every change. The panels should call pushHistory.
-        // But if they don't, we could debounce here. For now, no auto-push per change.
+    },
+    setAdjustments: (newAdjustments, pushToHistory = true) => {
+        set((state) => ({
+            adjustments: { ...state.adjustments, ...newAdjustments },
+        }));
+        if (pushToHistory) {
+            get().pushHistory();
+        }
     },
     resetAdjustment: (key) => {
         set((state) => ({
@@ -213,11 +243,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         get().pushHistory();
     },
     globalReset: () => {
-        set({
+        set((state) => ({
             adjustments: { ...defaultAdjustments },
+            crop: { ...defaultCrop },
             masks: [],
-            activeMaskId: null
-        });
+            activeMaskId: null,
+        }));
         get().pushHistory();
     },
 
@@ -228,7 +259,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             masks: [...state.masks, mask],
             activeMaskId: mask.id,
-            activeTool: mask.type === 'brush' ? 'brush' : state.activeTool
+            activeTool: mask.type === 'brush' ? 'brush' : state.activeTool,
         }));
         get().pushHistory();
     },
@@ -309,13 +340,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         const croppedSrc = canvas.toDataURL('image/png');
 
         // Update the image and reset crop
+        const newImage: ImageState = {
+            src: croppedSrc,
+            originalWidth: Math.round(cropW),
+            originalHeight: Math.round(cropH),
+            fileName: image.fileName,
+        };
+
         set({
-            image: {
-                src: croppedSrc,
-                originalWidth: Math.round(cropW),
-                originalHeight: Math.round(cropH),
-                fileName: image.fileName,
-            },
+            image: newImage,
             crop: { ...defaultCrop },
         });
         get().pushHistory();
@@ -335,41 +368,47 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             if (!W || !H) return { adjustments: { ...state.adjustments, straighten: angle } };
 
             const angleRad = (angle * Math.PI) / 180;
-
-            // 1. Calculate the bounding box of the rotated image
             const boundingW = W * Math.abs(Math.cos(angleRad)) + H * Math.abs(Math.sin(angleRad));
             const boundingH = W * Math.abs(Math.sin(angleRad)) + H * Math.abs(Math.cos(angleRad));
-
-            // 2. Calculate the required scale to fit the original dimensions (Auto-Zoom)
-            // Ensure the rotated image COVERS the original WxH box.
             const scale = Math.max(boundingW / W, boundingH / H);
 
             return {
                 adjustments: {
                     ...state.adjustments,
                     straighten: angle,
-                    straightenScale: scale
-                }
+                    straightenScale: scale,
+                },
             };
         });
-        // Debounce history? Or push on release. GeometryPanel already pushes on release (handleChangeComplete).
-        // setStraighten is called during drag.
     },
-
 
     // History
     history: [],
     historyIndex: -1,
     pushHistory: () => {
-        const { adjustments, masks, history, historyIndex } = get();
-        const newHistory = history.slice(0, historyIndex + 1);
-        newHistory.push({
+        const { image, adjustments, masks, history, historyIndex } = get();
+        if (!image.src) return;
+
+        // Slice history up to current index
+        const validHistory = historyIndex >= 0 ? history.slice(0, historyIndex + 1) : [];
+
+        // Add new entry with deep clones
+        validHistory.push({
+            image: { ...image },
             adjustments: { ...adjustments },
             masks: masks ? JSON.parse(JSON.stringify(masks)) : [],
-            timestamp: Date.now()
+            timestamp: Date.now(),
         });
-        if (newHistory.length > 50) newHistory.shift();
-        set({ history: newHistory, historyIndex: newHistory.length - 1 });
+
+        // Limit max history entries to 50
+        if (validHistory.length > 50) {
+            validHistory.shift();
+        }
+
+        set({
+            history: validHistory,
+            historyIndex: validHistory.length - 1,
+        });
     },
     undo: () => {
         const { history, historyIndex } = get();
@@ -377,6 +416,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const newIndex = historyIndex - 1;
             const entry = history[newIndex];
             set({
+                image: { ...entry.image },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,
@@ -389,18 +429,29 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const newIndex = historyIndex + 1;
             const entry = history[newIndex];
             set({
+                image: { ...entry.image },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,
             });
         }
     },
-    canUndo: () => get().historyIndex > 0,
-    canRedo: () => get().historyIndex < get().history.length - 1,
+    canUndo: () => {
+        const { historyIndex } = get();
+        return historyIndex > 0;
+    },
+    canRedo: () => {
+        const { history, historyIndex } = get();
+        return historyIndex >= 0 && historyIndex < history.length - 1;
+    },
 
     // UI
     exportModalOpen: false,
     setExportModalOpen: (open) => set({ exportModalOpen: open }),
+    compareMode: 'none',
+    setCompareMode: (mode) => set({ compareMode: mode }),
+    splitSliderPos: 50,
+    setSplitSliderPos: (pos) => set({ splitSliderPos: Math.min(100, Math.max(0, pos)) }),
 }));
 
 export const useAdjustments = () => useEditorStore((state) => state.adjustments);
