@@ -103,6 +103,8 @@ interface EditorStore {
     setCropActive: (active: boolean) => void;
     setCropAspectRatio: (ratio: string) => void;
     updateCrop: (crop: Partial<CropState>) => void;
+    applyCrop: () => Promise<void>;
+    resetCrop: () => void;
     setStraighten: (angle: number) => void;
 
     // History
@@ -264,6 +266,66 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         })),
     updateCrop: (cropUpdate) =>
         set((state) => ({ crop: { ...state.crop, ...cropUpdate } })),
+    applyCrop: async () => {
+        const { image, crop } = get();
+        if (!image.src) return;
+
+        // Calculate pixel crop values
+        const cropX = (crop.x / 100) * image.originalWidth;
+        const cropY = (crop.y / 100) * image.originalHeight;
+        const cropW = (crop.width / 100) * image.originalWidth;
+        const cropH = (crop.height / 100) * image.originalHeight;
+
+        // Skip if crop covers the entire image
+        if (cropX === 0 && cropY === 0 && cropW === image.originalWidth && cropH === image.originalHeight) {
+            set({ crop: { ...defaultCrop } });
+            return;
+        }
+
+        // Create a canvas to render the cropped image
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(cropW);
+        canvas.height = Math.round(cropH);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Load the current image
+        const img = new window.Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = reject;
+            img.src = image.src!;
+        });
+
+        // Draw only the cropped region
+        ctx.drawImage(
+            img,
+            Math.round(cropX), Math.round(cropY), Math.round(cropW), Math.round(cropH),
+            0, 0, Math.round(cropW), Math.round(cropH)
+        );
+
+        // Convert to data URL
+        const croppedSrc = canvas.toDataURL('image/png');
+
+        // Update the image and reset crop
+        set({
+            image: {
+                src: croppedSrc,
+                originalWidth: Math.round(cropW),
+                originalHeight: Math.round(cropH),
+                fileName: image.fileName,
+            },
+            crop: { ...defaultCrop },
+        });
+        get().pushHistory();
+    },
+    resetCrop: () => {
+        set({
+            crop: { ...defaultCrop },
+            adjustments: { ...get().adjustments, cropAspectRatio: 'free' },
+        });
+    },
     setStraighten: (angle: number) => {
         set((state) => {
             const { image } = state;

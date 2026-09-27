@@ -200,6 +200,10 @@ function CropTool({
     const scaledWidth = width * scale;
     const scaledHeight = height * scale;
 
+    // Handle size based on scale
+    const handleSize = Math.max(8, Math.min(14, 10 / scale));
+    const edgeHandleLength = Math.max(20, Math.min(36, 28 / scale));
+
     useEffect(() => {
         if (crop.isActive && trRef.current && shapeRef.current) {
             trRef.current.nodes([shapeRef.current]);
@@ -212,14 +216,6 @@ function CropTool({
         if (crop.isActive && crop.aspectRatio !== 'free') {
             const [rW, rH] = crop.aspectRatio.split(':').map(Number);
             const targetRatio = rW / rH;
-
-            // Current implementation: Centered resize to fit ratio
-            // Keep the same current area roughly, but force ratio.
-            // We usually want to fit the largest possible rect of new ratio inside current 'Safe Zone' OR current Crop Rect?
-            // Standard behavior: Reset to largest center crop of that ratio within the IMAGE bounds (Safe Zone).
-
-            // NOTE: The 'width' and 'height' props here are Original Image Dimensions.
-            // When user picks a ratio, usually they want a fresh crop of that ratio.
 
             let newW = width;
             let newH = width / targetRatio;
@@ -240,7 +236,7 @@ function CropTool({
                 height: (newH / height) * 100
             });
         }
-    }, [crop.aspectRatio, width, height]); // Only trigger when aspect ratio value actually changes.
+    }, [crop.aspectRatio, width, height]);
 
 
     if (!crop.isActive) return null;
@@ -279,7 +275,6 @@ function CropTool({
     };
 
     const boundBoxFunc = (oldBox: any, newBox: any) => {
-        // Limit to image bounds
         if (newBox.x < 0) {
             newBox.width += newBox.x;
             newBox.x = 0;
@@ -294,30 +289,38 @@ function CropTool({
         if (newBox.y + newBox.height > scaledHeight) {
             newBox.height = scaledHeight - newBox.y;
         }
+        // Minimum size
+        if (newBox.width < 20) newBox.width = 20;
+        if (newBox.height < 20) newBox.height = 20;
         return newBox;
     };
 
+    // Rule of thirds grid lines
+    const thirdW = w / 3;
+    const thirdH = h / 3;
+
+    // Corner handle dimensions
+    const cornerLen = Math.min(handleSize * 2.5, w / 4, h / 4);
+    const cornerThick = Math.max(2, 3 / scale);
+
     return (
         <Group>
-            <Group opacity={0.6}>
-                {/* Simplified Overlay: Just one rect with hole or 4 rects? 
-                   Let's stick to 4 rects logic but scaled.
-                */}
-                <Rect x={0} y={0} width={scaledWidth} height={y} fill="black" listening={false} />
-                <Rect x={0} y={y + h} width={scaledWidth} height={scaledHeight - (y + h)} fill="black" listening={false} />
-                <Rect x={0} y={y} width={x} height={h} fill="black" listening={false} />
-                <Rect x={x + w} y={y} width={scaledWidth - (x + w)} height={h} fill="black" listening={false} />
+            {/* Dark overlay (4 rects around crop area) */}
+            <Group>
+                <Rect x={0} y={0} width={scaledWidth} height={y} fill="black" opacity={0.55} listening={false} />
+                <Rect x={0} y={y + h} width={scaledWidth} height={scaledHeight - (y + h)} fill="black" opacity={0.55} listening={false} />
+                <Rect x={0} y={y} width={x} height={h} fill="black" opacity={0.55} listening={false} />
+                <Rect x={x + w} y={y} width={scaledWidth - (x + w)} height={h} fill="black" opacity={0.55} listening={false} />
             </Group>
 
+            {/* Draggable crop region (invisible but interactive) */}
             <Rect
                 ref={shapeRef}
                 x={x}
                 y={y}
                 width={w}
                 height={h}
-                stroke="white"
-                strokeWidth={2}
-                dash={[5, 10]}
+                fill="transparent"
                 draggable
                 onDragEnd={handleDragEnd}
                 onTransformEnd={handleTransformEnd}
@@ -328,12 +331,68 @@ function CropTool({
                 }}
             />
 
+            {/* Crop border */}
+            <Rect
+                x={x}
+                y={y}
+                width={w}
+                height={h}
+                stroke="white"
+                strokeWidth={1.5}
+                listening={false}
+            />
+
+            {/* Rule of thirds grid */}
+            <Group listening={false} opacity={0.4}>
+                {/* Vertical lines */}
+                <Rect x={x + thirdW} y={y} width={0.5} height={h} fill="white" />
+                <Rect x={x + thirdW * 2} y={y} width={0.5} height={h} fill="white" />
+                {/* Horizontal lines */}
+                <Rect x={x} y={y + thirdH} width={w} height={0.5} fill="white" />
+                <Rect x={x} y={y + thirdH * 2} width={w} height={0.5} fill="white" />
+            </Group>
+
+            {/* Corner handles - L-shaped golden handles */}
+            <Group listening={false}>
+                {/* Top-Left */}
+                <Rect x={x - cornerThick / 2} y={y - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                <Rect x={x - cornerThick / 2} y={y - cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
+
+                {/* Top-Right */}
+                <Rect x={x + w - cornerLen + cornerThick / 2} y={y - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                <Rect x={x + w - cornerThick / 2} y={y - cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
+
+                {/* Bottom-Left */}
+                <Rect x={x - cornerThick / 2} y={y + h - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                <Rect x={x - cornerThick / 2} y={y + h - cornerLen + cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
+
+                {/* Bottom-Right */}
+                <Rect x={x + w - cornerLen + cornerThick / 2} y={y + h - cornerThick / 2} width={cornerLen} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                <Rect x={x + w - cornerThick / 2} y={y + h - cornerLen + cornerThick / 2} width={cornerThick} height={cornerLen} fill="#FFD700" cornerRadius={1} />
+
+                {/* Edge midpoint handles - small gold bars */}
+                {/* Top center */}
+                <Rect x={x + w / 2 - edgeHandleLength / 2} y={y - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                {/* Bottom center */}
+                <Rect x={x + w / 2 - edgeHandleLength / 2} y={y + h - cornerThick / 2} width={edgeHandleLength} height={cornerThick} fill="#FFD700" cornerRadius={1} />
+                {/* Left center */}
+                <Rect x={x - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
+                {/* Right center */}
+                <Rect x={x + w - cornerThick / 2} y={y + h / 2 - edgeHandleLength / 2} width={cornerThick} height={edgeHandleLength} fill="#FFD700" cornerRadius={1} />
+            </Group>
+
+            {/* Transformer (invisible anchors for resize interaction) */}
             <Transformer
                 ref={trRef}
                 rotateEnabled={false}
                 keepRatio={crop.aspectRatio !== 'free'}
                 boundBoxFunc={boundBoxFunc}
                 ignoreStroke
+                borderEnabled={false}
+                anchorSize={handleSize}
+                anchorStroke="transparent"
+                anchorFill="transparent"
+                anchorCornerRadius={0}
             />
         </Group>
     );

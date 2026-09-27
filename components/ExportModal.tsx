@@ -47,14 +47,21 @@ export default function ExportModal() {
                 img.src = image.src!;
             });
 
-            // Set canvas size
-            canvas.width = img.width;
-            canvas.height = img.height;
+            // Calculate crop values
+            const cropState = useEditorStore.getState().crop;
+            const cropX = (cropState.x / 100) * img.width;
+            const cropY = (cropState.y / 100) * img.height;
+            const cropW = (cropState.width / 100) * img.width;
+            const cropH = (cropState.height / 100) * img.height;
+
+            // Set canvas to cropped size
+            canvas.width = Math.round(cropW);
+            canvas.height = Math.round(cropH);
 
             // Apply transformations
             ctx.save();
 
-            // Apply rotation and straighten
+            // Apply rotation and straighten relative to cropped center
             const totalRotation = (adjustments.rotation + adjustments.straighten) * Math.PI / 180;
             ctx.translate(canvas.width / 2, canvas.height / 2);
             ctx.rotate(totalRotation);
@@ -63,8 +70,12 @@ export default function ExportModal() {
             // Apply CSS filter
             ctx.filter = computeFilterString(adjustments);
 
-            // Draw image
-            ctx.drawImage(img, 0, 0);
+            // Draw only the cropped region
+            ctx.drawImage(
+                img,
+                Math.round(cropX), Math.round(cropY), Math.round(cropW), Math.round(cropH),
+                0, 0, Math.round(cropW), Math.round(cropH)
+            );
             ctx.restore();
 
             // Apply vignette if needed
