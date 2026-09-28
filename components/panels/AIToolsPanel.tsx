@@ -1,15 +1,15 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Wand2 } from 'lucide-react';
+import { Wand2, Sparkles } from 'lucide-react';
 import AccordionPanel from '@/components/ui/AccordionPanel';
 import { useEditorStore } from '@/lib/store';
-import { calculateAutoEnhance } from '@/lib/image-processing';
+import { calculateAutoEnhance, calculateAutoWB } from '@/lib/image-processing';
 import { cn } from '@/lib/utils';
 
 export default function AIToolsPanel() {
     const image = useEditorStore((state) => state.image);
-    const updateAdjustment = useEditorStore((state) => state.updateAdjustment);
+    const setAdjustments = useEditorStore((state) => state.setAdjustments);
 
     const [isEnhancing, setIsEnhancing] = useState(false);
 
@@ -17,29 +17,38 @@ export default function AIToolsPanel() {
         if (!image.src) return;
         setIsEnhancing(true);
 
-        // Create an offscreen canvas to analyze the image
-        const img = new Image();
-        img.src = image.src;
-        img.crossOrigin = 'Anonymous';
-        await new Promise((r) => (img.onload = r));
+        try {
+            // Create an offscreen canvas to analyze the image histogram & color channels
+            const img = new Image();
+            img.src = image.src;
+            img.crossOrigin = 'Anonymous';
+            await new Promise((r) => (img.onload = r));
 
-        const canvas = document.createElement('canvas');
-        canvas.width = 300; // Downscale for performance
-        canvas.height = (300 / img.width) * img.height;
-        const ctx = canvas.getContext('2d');
+            const canvas = document.createElement('canvas');
+            const targetW = 320;
+            canvas.width = targetW;
+            canvas.height = Math.round((targetW / img.width) * img.height);
+            const ctx = canvas.getContext('2d');
 
-        if (ctx) {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            const output = calculateAutoEnhance(ctx, canvas.width, canvas.height);
+            if (ctx) {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                const enhanceVals = calculateAutoEnhance(ctx, canvas.width, canvas.height);
+                const wbVals = calculateAutoWB(ctx, canvas.width, canvas.height);
 
-            // Apply values
-            Object.entries(output).forEach(([key, value]) => {
-                // @ts-ignore
-                updateAdjustment(key, value);
-            });
+                // Apply enhanced values in a single atomic update and push to undo history
+                setAdjustments(
+                    {
+                        ...enhanceVals,
+                        ...wbVals,
+                    },
+                    true
+                );
+            }
+        } catch (err) {
+            console.error('Auto enhance failed:', err);
+        } finally {
+            setIsEnhancing(false);
         }
-
-        setIsEnhancing(false);
     };
 
     return (
@@ -49,14 +58,16 @@ export default function AIToolsPanel() {
                     onClick={handleAutoEnhance}
                     disabled={!image.src || isEnhancing}
                     className={cn(
-                        'flex items-center justify-center gap-2 p-3 rounded',
-                        'bg-editor-surface border border-editor-border',
-                        'hover:bg-editor-surfaceHover transition-colors duration-150',
-                        isEnhancing && 'opacity-50 cursor-wait'
+                        'flex items-center justify-center gap-2 p-3 font-bold text-xs uppercase tracking-wider',
+                        'border-2 border-editor-border shadow-[2px_2px_0_0_#000]',
+                        'transition-all duration-150',
+                        image.src && !isEnhancing
+                            ? 'bg-yellow-300 hover:bg-yellow-400 text-editor-text hover:translate-y-px hover:shadow-[1px_1px_0_0_#000] active:translate-y-0.5 active:shadow-none'
+                            : 'bg-gray-100 text-gray-400 border-gray-300 shadow-none cursor-not-allowed'
                     )}
                 >
-                    <Wand2 size={20} className="text-editor-accent" />
-                    <span className="text-xs font-medium text-editor-text">Auto Enhance</span>
+                    <Sparkles size={16} className={isEnhancing ? 'animate-spin' : ''} />
+                    <span>{isEnhancing ? 'Enhancing...' : 'Auto Enhance'}</span>
                 </button>
             </div>
         </AccordionPanel>

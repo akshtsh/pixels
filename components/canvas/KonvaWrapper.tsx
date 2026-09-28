@@ -20,6 +20,11 @@ interface KonvaWrapperProps {
     rotation?: number;
     straighten?: number;
     straightenScale?: number;
+    zoom?: number;
+    onZoomChange?: (zoom: number) => void;
+    position?: { x: number; y: number };
+    onPositionChange?: (pos: { x: number; y: number }) => void;
+    interactive?: boolean;
 }
 
 export default function KonvaWrapper({
@@ -32,14 +37,32 @@ export default function KonvaWrapper({
     onUpdateCrop,
     rotation = 0,
     straighten = 0,
-    straightenScale = 1
+    straightenScale = 1,
+    zoom: controlledZoom,
+    onZoomChange,
+    position: controlledPosition,
+    onPositionChange,
+    interactive = true,
 }: KonvaWrapperProps) {
     const stageRef = useRef<Konva.Stage>(null);
     const [konvaImage, setKonvaImage] = useState<HTMLImageElement | null>(null);
 
     // Zoom and Pan state
-    const [zoom, setZoom] = useState(1);
-    const [position, setPosition] = useState({ x: 0, y: 0 });
+    const [internalZoom, setInternalZoom] = useState(1);
+    const [internalPosition, setInternalPosition] = useState({ x: 0, y: 0 });
+
+    const zoom = controlledZoom !== undefined ? controlledZoom : internalZoom;
+    const position = controlledPosition !== undefined ? controlledPosition : internalPosition;
+
+    const setZoom = (newZoom: number) => {
+        setInternalZoom(newZoom);
+        onZoomChange?.(newZoom);
+    };
+
+    const setPosition = (newPos: { x: number; y: number }) => {
+        setInternalPosition(newPos);
+        onPositionChange?.(newPos);
+    };
 
     useEffect(() => {
         if (imageSrc) {
@@ -54,11 +77,16 @@ export default function KonvaWrapper({
 
     // Reset zoom and position when image changes
     useEffect(() => {
-        setZoom(1);
-        setPosition({ x: 0, y: 0 });
-    }, [imageSrc]);
+        if (controlledZoom === undefined) {
+            setInternalZoom(1);
+        }
+        if (controlledPosition === undefined) {
+            setInternalPosition({ x: 0, y: 0 });
+        }
+    }, [imageSrc, controlledZoom, controlledPosition]);
 
     const handleWheel = (e: Konva.KonvaEventObject<WheelEvent>) => {
+        if (!interactive) return;
         e.evt.preventDefault();
         const scaleBy = 1.1;
         const stage = stageRef.current;
@@ -83,6 +111,7 @@ export default function KonvaWrapper({
     };
 
     const handleDragEnd = (e: Konva.KonvaEventObject<DragEvent>) => {
+        if (!interactive) return;
         if (e.target.name() === 'stage-drag') {
             setPosition({ x: e.target.x(), y: e.target.y() });
         }
@@ -90,38 +119,15 @@ export default function KonvaWrapper({
 
     if (!konvaImage) return null;
 
-    // Viewport Logic
     const isEditing = crop?.isActive;
 
-    // Crop values in Pixels (Unrotated Space)
-    const cropX = crop ? (crop.x / 100) * originalWidth : 0;
-    const cropY = crop ? (crop.y / 100) * originalHeight : 0;
-    const cropW = crop ? (crop.width / 100) * originalWidth : originalWidth;
-    const cropH = crop ? (crop.height / 100) * originalHeight : originalHeight;
+    // Stage dimensions always match the current image dimensions scaled
+    const stageWidth = originalWidth * externalScale;
+    const stageHeight = originalHeight * externalScale;
 
-    // Stage Dimensions
-    // Result View: Size matches the crop dimensions
-    // Edit View: Size matches the FULL Safe Zone (original image size)
-    const viewW = isEditing ? originalWidth : cropW;
-    const viewH = isEditing ? originalHeight : cropH;
-
-    const stageWidth = viewW * externalScale;
-    const stageHeight = viewH * externalScale;
-
-    // Image Position relative to Stage (0,0)
-    // If Editing: Safe Zone (0,0) aligns with Stage (0,0).
-    // If Result: Safe Zone (cropX, cropY) aligns with Stage (0,0) -> i.e., shift Safe Zone by -cropX, -cropY.
-    const shiftX = isEditing ? 0 : -cropX;
-    const shiftY = isEditing ? 0 : -cropY;
-
-    // Calculate center of the Safe Zone relative to its top-left (0,0)
-    const safeZoneCenterX = originalWidth / 2;
-    const safeZoneCenterY = originalHeight / 2;
-
-    // Image Node Position
-    // We want the Image Center (Pivot) to be at `shift + safeZoneCenter`.
-    const imgX = (shiftX + safeZoneCenterX) * externalScale;
-    const imgY = (shiftY + safeZoneCenterY) * externalScale;
+    // Center image on the stage
+    const imgX = (originalWidth / 2) * externalScale;
+    const imgY = (originalHeight / 2) * externalScale;
 
     const totalRotation = rotation + straighten;
 
@@ -130,11 +136,11 @@ export default function KonvaWrapper({
             ref={stageRef}
             width={stageWidth}
             height={stageHeight}
-            scaleX={zoom} // externalScale is applied manually to coords/sizes to allow flexible "View" logic
+            scaleX={zoom}
             scaleY={zoom}
             x={position.x}
             y={position.y}
-            draggable={!isEditing} // Pan stage when not editing crop
+            draggable={interactive && !isEditing}
             name="stage-drag"
             onWheel={handleWheel}
             onDragEnd={handleDragEnd}
@@ -154,8 +160,8 @@ export default function KonvaWrapper({
                     scaleY={straightenScale * externalScale}
                 />
 
-                {/* Crop UI (Only when editing) */}
-                {isEditing && crop && onUpdateCrop && (
+                {/* Crop UI (Only when editing and interactive) */}
+                {interactive && isEditing && crop && onUpdateCrop && (
                     <CropTool
                         width={originalWidth}
                         height={originalHeight}
@@ -174,7 +180,7 @@ function CropTool({
     height,
     crop,
     onUpdate,
-    scale
+    scale,
 }: {
     width: number;
     height: number;
@@ -192,34 +198,104 @@ function CropTool({
     const shapeRef = useRef<Konva.Rect>(null);
     const trRef = useRef<Konva.Transformer>(null);
 
-    const x = (crop.x / 100) * width * scale;
-    const y = (crop.y / 100) * height * scale;
-    const w = (crop.width / 100) * width * scale;
-    const h = (crop.height / 100) * height * scale;
+    // Direct Konva node references for 120fps smooth visual tracking without React re-renders
+    const topOverlayRef = useRef<Konva.Rect>(null);
+    const bottomOverlayRef = useRef<Konva.Rect>(null);
+    const leftOverlayRef = useRef<Konva.Rect>(null);
+    const rightOverlayRef = useRef<Konva.Rect>(null);
+    const vLine1Ref = useRef<Konva.Rect>(null);
+    const vLine2Ref = useRef<Konva.Rect>(null);
+    const hLine1Ref = useRef<Konva.Rect>(null);
+    const hLine2Ref = useRef<Konva.Rect>(null);
 
     const scaledWidth = width * scale;
     const scaledHeight = height * scale;
 
+    const initialX = (crop.x / 100) * scaledWidth;
+    const initialY = (crop.y / 100) * scaledHeight;
+    const initialW = (crop.width / 100) * scaledWidth;
+    const initialH = (crop.height / 100) * scaledHeight;
+
+    const updateVisuals = () => {
+        const node = shapeRef.current;
+        if (!node) return;
+
+        const scaleX = node.scaleX();
+        const scaleY = node.scaleY();
+        let nx = node.x();
+        let ny = node.y();
+        let nw = Math.abs(node.width() * scaleX);
+        let nh = Math.abs(node.height() * scaleY);
+
+        if (scaleX < 0) nx -= nw;
+        if (scaleY < 0) ny -= nh;
+
+        // Visual overlays clamp to bounds
+        const topH = Math.max(0, Math.min(scaledHeight, ny));
+        topOverlayRef.current?.height(topH);
+
+        const botY = Math.max(0, Math.min(scaledHeight, ny + nh));
+        bottomOverlayRef.current?.y(botY);
+        bottomOverlayRef.current?.height(Math.max(0, scaledHeight - botY));
+
+        const leftW = Math.max(0, Math.min(scaledWidth, nx));
+        leftOverlayRef.current?.y(Math.max(0, ny));
+        leftOverlayRef.current?.width(leftW);
+        leftOverlayRef.current?.height(Math.max(0, Math.min(scaledHeight - ny, nh)));
+
+        const rightX = Math.max(0, Math.min(scaledWidth, nx + nw));
+        rightOverlayRef.current?.x(rightX);
+        rightOverlayRef.current?.y(Math.max(0, ny));
+        rightOverlayRef.current?.width(Math.max(0, scaledWidth - rightX));
+        rightOverlayRef.current?.height(Math.max(0, Math.min(scaledHeight - ny, nh)));
+
+        // Update rule-of-thirds grid lines
+        const thirdW = nw / 3;
+        const thirdH = nh / 3;
+
+        vLine1Ref.current?.position({ x: nx + thirdW, y: ny });
+        vLine1Ref.current?.height(nh);
+
+        vLine2Ref.current?.position({ x: nx + thirdW * 2, y: ny });
+        vLine2Ref.current?.height(nh);
+
+        hLine1Ref.current?.position({ x: nx, y: ny + thirdH });
+        hLine1Ref.current?.width(nw);
+
+        hLine2Ref.current?.position({ x: nx, y: ny + thirdH * 2 });
+        hLine2Ref.current?.width(nw);
+
+        node.getLayer()?.batchDraw();
+    };
+
+    // Sync shape position and transformer when crop props change from external UI (e.g. aspect ratio buttons)
     useEffect(() => {
-        if (crop.isActive && trRef.current && shapeRef.current) {
-            trRef.current.nodes([shapeRef.current]);
-            trRef.current.getLayer()?.batchDraw();
+        const nx = (crop.x / 100) * scaledWidth;
+        const ny = (crop.y / 100) * scaledHeight;
+        const nw = (crop.width / 100) * scaledWidth;
+        const nh = (crop.height / 100) * scaledHeight;
+
+        if (shapeRef.current) {
+            shapeRef.current.position({ x: nx, y: ny });
+            shapeRef.current.width(nw);
+            shapeRef.current.height(nh);
+            shapeRef.current.scaleX(1);
+            shapeRef.current.scaleY(1);
         }
-    }, [crop.isActive]);
+
+        if (trRef.current && shapeRef.current) {
+            trRef.current.nodes([shapeRef.current]);
+        }
+
+        updateVisuals();
+    }, [crop.x, crop.y, crop.width, crop.height, scaledWidth, scaledHeight]);
 
     // Aspect Ratio Logic
     useEffect(() => {
         if (crop.isActive && crop.aspectRatio !== 'free') {
             const [rW, rH] = crop.aspectRatio.split(':').map(Number);
+            if (!rW || !rH) return;
             const targetRatio = rW / rH;
-
-            // Current implementation: Centered resize to fit ratio
-            // Keep the same current area roughly, but force ratio.
-            // We usually want to fit the largest possible rect of new ratio inside current 'Safe Zone' OR current Crop Rect?
-            // Standard behavior: Reset to largest center crop of that ratio within the IMAGE bounds (Safe Zone).
-
-            // NOTE: The 'width' and 'height' props here are Original Image Dimensions.
-            // When user picks a ratio, usually they want a fresh crop of that ratio.
 
             let newW = width;
             let newH = width / targetRatio;
@@ -229,7 +305,6 @@ function CropTool({
                 newW = newH * targetRatio;
             }
 
-            // Center it
             const newX = (width - newW) / 2;
             const newY = (height - newH) / 2;
 
@@ -237,22 +312,35 @@ function CropTool({
                 x: (newX / width) * 100,
                 y: (newY / height) * 100,
                 width: (newW / width) * 100,
-                height: (newH / height) * 100
+                height: (newH / height) * 100,
             });
         }
-    }, [crop.aspectRatio, width, height]); // Only trigger when aspect ratio value actually changes.
-
+    }, [crop.aspectRatio, width, height]);
 
     if (!crop.isActive) return null;
+
+    const handleDragMove = () => {
+        updateVisuals();
+    };
 
     const handleDragEnd = () => {
         const node = shapeRef.current;
         if (!node) return;
 
-        const newX = (node.x() / scaledWidth) * 100;
-        const newY = (node.y() / scaledHeight) * 100;
+        const newX = Math.max(0, Math.min(scaledWidth - node.width(), node.x()));
+        const newY = Math.max(0, Math.min(scaledHeight - node.height(), node.y()));
 
-        onUpdate({ x: newX, y: newY });
+        node.position({ x: newX, y: newY });
+        updateVisuals();
+
+        onUpdate({
+            x: (newX / scaledWidth) * 100,
+            y: (newY / scaledHeight) * 100,
+        });
+    };
+
+    const handleTransform = () => {
+        updateVisuals();
     };
 
     const handleTransformEnd = () => {
@@ -265,75 +353,152 @@ function CropTool({
         node.scaleX(1);
         node.scaleY(1);
 
-        const newW = (node.width() * scaleX / scaledWidth) * 100;
-        const newH = (node.height() * scaleY / scaledHeight) * 100;
-        const newX = (node.x() / scaledWidth) * 100;
-        const newY = (node.y() / scaledHeight) * 100;
+        let finalW = Math.abs(node.width() * scaleX);
+        let finalH = Math.abs(node.height() * scaleY);
+        let finalX = node.x();
+        let finalY = node.y();
+
+        if (scaleX < 0) {
+            finalX -= finalW;
+        }
+        if (scaleY < 0) {
+            finalY -= finalH;
+        }
+
+        // Clamp to image dimensions
+        finalX = Math.max(0, Math.min(scaledWidth - 20, finalX));
+        finalY = Math.max(0, Math.min(scaledHeight - 20, finalY));
+        finalW = Math.max(20, Math.min(scaledWidth - finalX, finalW));
+        finalH = Math.max(20, Math.min(scaledHeight - finalY, finalH));
+
+        node.width(finalW);
+        node.height(finalH);
+        node.position({ x: finalX, y: finalY });
+
+        if (trRef.current) {
+            trRef.current.nodes([node]);
+        }
+        updateVisuals();
 
         onUpdate({
-            x: newX,
-            y: newY,
-            width: newW,
-            height: newH,
+            x: (finalX / scaledWidth) * 100,
+            y: (finalY / scaledHeight) * 100,
+            width: (finalW / scaledWidth) * 100,
+            height: (finalH / scaledHeight) * 100,
         });
     };
 
-    const boundBoxFunc = (oldBox: any, newBox: any) => {
-        // Limit to image bounds
-        if (newBox.x < 0) {
-            newBox.width += newBox.x;
-            newBox.x = 0;
-        }
-        if (newBox.y < 0) {
-            newBox.height += newBox.y;
-            newBox.y = 0;
-        }
-        if (newBox.x + newBox.width > scaledWidth) {
-            newBox.width = scaledWidth - newBox.x;
-        }
-        if (newBox.y + newBox.height > scaledHeight) {
-            newBox.height = scaledHeight - newBox.y;
-        }
-        return newBox;
-    };
+    const thirdW = initialW / 3;
+    const thirdH = initialH / 3;
 
     return (
         <Group>
-            <Group opacity={0.6}>
-                {/* Simplified Overlay: Just one rect with hole or 4 rects? 
-                   Let's stick to 4 rects logic but scaled.
-                */}
-                <Rect x={0} y={0} width={scaledWidth} height={y} fill="black" listening={false} />
-                <Rect x={0} y={y + h} width={scaledWidth} height={scaledHeight - (y + h)} fill="black" listening={false} />
-                <Rect x={0} y={y} width={x} height={h} fill="black" listening={false} />
-                <Rect x={x + w} y={y} width={scaledWidth - (x + w)} height={h} fill="black" listening={false} />
+            {/* Dimmed backdrop around crop box (4 rects) */}
+            <Group listening={false}>
+                <Rect ref={topOverlayRef} x={0} y={0} width={scaledWidth} height={Math.max(0, initialY)} fill="black" opacity={0.6} />
+                <Rect
+                    ref={bottomOverlayRef}
+                    x={0}
+                    y={Math.min(scaledHeight, initialY + initialH)}
+                    width={scaledWidth}
+                    height={Math.max(0, scaledHeight - (initialY + initialH))}
+                    fill="black"
+                    opacity={0.6}
+                />
+                <Rect
+                    ref={leftOverlayRef}
+                    x={0}
+                    y={Math.max(0, initialY)}
+                    width={Math.max(0, initialX)}
+                    height={initialH}
+                    fill="black"
+                    opacity={0.6}
+                />
+                <Rect
+                    ref={rightOverlayRef}
+                    x={Math.min(scaledWidth, initialX + initialW)}
+                    y={Math.max(0, initialY)}
+                    width={Math.max(0, scaledWidth - (initialX + initialW))}
+                    height={initialH}
+                    fill="black"
+                    opacity={0.6}
+                />
             </Group>
 
+            {/* Draggable interactive crop region */}
             <Rect
                 ref={shapeRef}
-                x={x}
-                y={y}
-                width={w}
-                height={h}
-                stroke="white"
-                strokeWidth={2}
-                dash={[5, 10]}
+                x={initialX}
+                y={initialY}
+                width={initialW}
+                height={initialH}
+                fill="rgba(255, 255, 255, 0.001)"
+                stroke="#FFFFFF"
+                strokeWidth={1.5}
                 draggable
+                onDragMove={handleDragMove}
                 onDragEnd={handleDragEnd}
+                onTransform={handleTransform}
                 onTransformEnd={handleTransformEnd}
                 dragBoundFunc={(pos) => {
-                    const newX = Math.max(0, Math.min(scaledWidth - w, pos.x));
-                    const newY = Math.max(0, Math.min(scaledHeight - h, pos.y));
+                    const node = shapeRef.current;
+                    const curW = node ? Math.abs(node.width() * node.scaleX()) : initialW;
+                    const curH = node ? Math.abs(node.height() * node.scaleY()) : initialH;
+                    const newX = Math.max(0, Math.min(scaledWidth - curW, pos.x));
+                    const newY = Math.max(0, Math.min(scaledHeight - curH, pos.y));
                     return { x: newX, y: newY };
+                }}
+                onMouseEnter={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'move';
+                }}
+                onMouseLeave={(e) => {
+                    const container = e.target.getStage()?.container();
+                    if (container) container.style.cursor = 'default';
                 }}
             />
 
+            {/* Rule of thirds grid inside crop box */}
+            <Group listening={false} opacity={0.45}>
+                <Rect ref={vLine1Ref} x={initialX + thirdW} y={initialY} width={1} height={initialH} fill="white" />
+                <Rect ref={vLine2Ref} x={initialX + thirdW * 2} y={initialY} width={1} height={initialH} fill="white" />
+                <Rect ref={hLine1Ref} x={initialX} y={initialY + thirdH} width={initialW} height={1} fill="white" />
+                <Rect ref={hLine2Ref} x={initialX} y={initialY + thirdH * 2} width={initialW} height={1} fill="white" />
+            </Group>
+
+            {/* Transformer with bold, responsive, neobrutalist yellow-gold handles for ALL 8 directions */}
             <Transformer
                 ref={trRef}
                 rotateEnabled={false}
                 keepRatio={crop.aspectRatio !== 'free'}
-                boundBoxFunc={boundBoxFunc}
-                ignoreStroke
+                enabledAnchors={
+                    crop.aspectRatio === 'free'
+                        ? [
+                              'top-left',
+                              'top-center',
+                              'top-right',
+                              'middle-right',
+                              'bottom-right',
+                              'bottom-center',
+                              'bottom-left',
+                              'middle-left',
+                          ]
+                        : ['top-left', 'top-right', 'bottom-right', 'bottom-left']
+                }
+                boundBoxFunc={(oldBox, newBox) => {
+                    if (Math.abs(newBox.width) < 20 || Math.abs(newBox.height) < 20) {
+                        return oldBox;
+                    }
+                    return newBox;
+                }}
+                anchorSize={16}
+                anchorStroke="#000000"
+                anchorStrokeWidth={2}
+                anchorFill="#FFD700"
+                anchorCornerRadius={2}
+                borderStroke="#FFFFFF"
+                borderStrokeWidth={2}
+                borderDash={[6, 4]}
             />
         </Group>
     );

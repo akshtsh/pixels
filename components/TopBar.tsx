@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Upload, RotateCcw, Download, Undo2, Redo2 } from 'lucide-react';
 import { useEditorStore } from '@/lib/store';
 import { cn } from '@/lib/utils';
@@ -12,8 +12,47 @@ export default function TopBar() {
     const image = useEditorStore((state) => state.image);
     const undo = useEditorStore((state) => state.undo);
     const redo = useEditorStore((state) => state.redo);
-    const canUndo = useEditorStore((state) => state.canUndo);
-    const canRedo = useEditorStore((state) => state.canRedo);
+    const historyIndex = useEditorStore((state) => state.historyIndex);
+    const historyLength = useEditorStore((state) => state.history.length);
+
+    // Direct reactive state evaluation ensures immediate re-renders
+    const canUndo = historyIndex > 0;
+    const canRedo = historyIndex >= 0 && historyIndex < historyLength - 1;
+
+    // Keyboard shortcuts for Undo and Redo
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Ignore if typing in text input
+            if (
+                e.target instanceof HTMLInputElement &&
+                (e.target.type === 'text' || e.target.type === 'number')
+            ) {
+                return;
+            }
+
+            const isMac = typeof window !== 'undefined' && navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+            const modifier = isMac ? e.metaKey : e.ctrlKey;
+
+            if (modifier && e.key.toLowerCase() === 'z') {
+                if (e.shiftKey) {
+                    // Redo (Ctrl+Shift+Z or Cmd+Shift+Z)
+                    e.preventDefault();
+                    if (canRedo) redo();
+                } else {
+                    // Undo (Ctrl+Z or Cmd+Z)
+                    e.preventDefault();
+                    if (canUndo) undo();
+                }
+            } else if (modifier && e.key.toLowerCase() === 'y') {
+                // Redo (Ctrl+Y)
+                e.preventDefault();
+                if (canRedo) redo();
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [canUndo, canRedo, undo, redo]);
 
     const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -31,7 +70,7 @@ export default function TopBar() {
     };
 
     return (
-        <header className="flex items-center justify-between h-14 px-4 bg-editor-surface border-b-2 border-editor-border shadow-sm z-50 relative">
+        <header className="flex items-center justify-between h-14 px-4 bg-editor-surface border-b-2 border-editor-border shadow-sm z-50 relative select-none">
             {/* Left: Logo/Title */}
             <div className="flex items-center gap-3">
                 <div className="flex items-center justify-center w-8 h-8 bg-editor-surface border-2 border-editor-border shadow-[2px_2px_0_0_#000] overflow-hidden">
@@ -47,29 +86,29 @@ export default function TopBar() {
             <div className="flex items-center gap-2 bg-white px-2 py-1 border-2 border-editor-border shadow-[2px_2px_0_0_#000]">
                 <button
                     onClick={undo}
-                    disabled={!canUndo()}
+                    disabled={!canUndo}
                     className={cn(
                         'flex items-center justify-center w-8 h-8 border-2',
                         'transition-all duration-150',
-                        canUndo()
-                            ? 'border-editor-border bg-yellow-300 hover:bg-yellow-400 text-editor-text shadow-[1px_1px_0_0_#000] hover:translate-y-px hover:shadow-none'
+                        canUndo
+                            ? 'border-editor-border bg-yellow-300 hover:bg-yellow-400 text-editor-text shadow-[1px_1px_0_0_#000] active:translate-y-px active:shadow-none'
                             : 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
                     )}
-                    title="Undo"
+                    title={canUndo ? 'Undo (Ctrl+Z)' : 'Nothing to undo'}
                 >
                     <Undo2 size={16} />
                 </button>
                 <button
                     onClick={redo}
-                    disabled={!canRedo()}
+                    disabled={!canRedo}
                     className={cn(
                         'flex items-center justify-center w-8 h-8 border-2',
                         'transition-all duration-150',
-                        canRedo()
-                            ? 'border-editor-border bg-yellow-300 hover:bg-yellow-400 text-editor-text shadow-[1px_1px_0_0_#000] hover:translate-y-px hover:shadow-none'
+                        canRedo
+                            ? 'border-editor-border bg-yellow-300 hover:bg-yellow-400 text-editor-text shadow-[1px_1px_0_0_#000] active:translate-y-px active:shadow-none'
                             : 'border-gray-200 bg-gray-100 text-gray-400 cursor-not-allowed'
                     )}
-                    title="Redo"
+                    title={canRedo ? 'Redo (Ctrl+Y)' : 'Nothing to redo'}
                 >
                     <Redo2 size={16} />
                 </button>
@@ -84,6 +123,7 @@ export default function TopBar() {
                         'bg-white border-2 border-editor-border shadow-[3px_3px_0_0_#000]',
                         'text-sm font-bold uppercase tracking-wide text-editor-text',
                         'hover:translate-y-0.5 hover:shadow-[1px_1px_0_0_#000] hover:bg-blue-50',
+                        'active:translate-y-1 active:shadow-none',
                         'transition-all duration-150'
                     )}
                 >
@@ -107,9 +147,10 @@ export default function TopBar() {
                         'text-sm font-bold uppercase tracking-wide',
                         'transition-all duration-150',
                         image.src
-                            ? 'bg-white text-editor-text hover:translate-y-0.5 hover:shadow-[1px_1px_0_0_#000] hover:bg-red-50'
+                            ? 'bg-white text-editor-text hover:translate-y-0.5 hover:shadow-[1px_1px_0_0_#000] hover:bg-red-50 active:translate-y-1 active:shadow-none'
                             : 'bg-gray-100 text-gray-400 border-gray-300 shadow-none cursor-not-allowed'
                     )}
+                    title="Reset all adjustments and crop"
                 >
                     <RotateCcw size={16} />
                     <span>Reset</span>
@@ -125,7 +166,7 @@ export default function TopBar() {
                         'text-sm font-bold uppercase tracking-wide',
                         'transition-all duration-150',
                         image.src
-                            ? 'bg-editor-accent text-white hover:translate-y-0.5 hover:shadow-[1px_1px_0_0_#000] hover:bg-red-600'
+                            ? 'bg-editor-accent text-white hover:translate-y-0.5 hover:shadow-[1px_1px_0_0_#000] hover:bg-red-600 active:translate-y-1 active:shadow-none'
                             : 'bg-gray-100 text-gray-400 border-gray-300 shadow-none cursor-not-allowed'
                     )}
                 >

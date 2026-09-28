@@ -66,6 +66,8 @@ export interface ImageState {
 }
 
 interface HistoryEntry {
+    image: ImageState;
+    crop: CropState;
     adjustments: AdjustmentState;
     masks: Mask[];
     timestamp: number;
@@ -86,6 +88,7 @@ interface EditorStore {
     // Global Adjustments
     adjustments: AdjustmentState;
     updateAdjustment: (key: AdjustmentKey, value: number | string) => void;
+    setAdjustments: (newAdjustments: Partial<AdjustmentState>, pushToHistory?: boolean) => void;
     resetAdjustment: (key: AdjustmentKey) => void;
     globalReset: () => void;
 
@@ -103,6 +106,8 @@ interface EditorStore {
     setCropActive: (active: boolean) => void;
     setCropAspectRatio: (ratio: string) => void;
     updateCrop: (crop: Partial<CropState>) => void;
+    applyCrop: () => Promise<void>;
+    resetCrop: () => void;
     setStraighten: (angle: number) => void;
 
     // History
@@ -117,11 +122,13 @@ interface EditorStore {
     // UI
     exportModalOpen: boolean;
     setExportModalOpen: (open: boolean) => void;
+    compareMode: 'none' | 'hold' | 'split';
+    setCompareMode: (mode: 'none' | 'hold' | 'split') => void;
+    splitSliderPos: number; // 0 to 100
+    setSplitSliderPos: (pos: number) => void;
 }
 
-
-
-const defaultAdjustments: AdjustmentState = {
+export const defaultAdjustments: AdjustmentState = {
     // Light
     exposure: 0,
     brilliance: 0,
@@ -176,17 +183,39 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     // Image
     image: defaultImage,
     setImage: (src, width, height, fileName) => {
+        const newImage: ImageState = { src, originalWidth: width, originalHeight: height, fileName };
+        const newAdjustments = { ...defaultAdjustments };
+        const newHistory: HistoryEntry[] = [
+            {
+                image: newImage,
+                crop: { ...defaultCrop },
+                adjustments: newAdjustments,
+                masks: [],
+                timestamp: Date.now(),
+            },
+        ];
+
         set({
-            image: { src, originalWidth: width, originalHeight: height, fileName },
+            image: newImage,
+            adjustments: newAdjustments,
+            crop: { ...defaultCrop },
+            masks: [],
+            activeMaskId: null,
+            history: newHistory,
+            historyIndex: 0,
+        });
+    },
+    clearImage: () => {
+        set({
+            image: defaultImage,
             adjustments: { ...defaultAdjustments },
+            crop: { ...defaultCrop },
             masks: [],
             activeMaskId: null,
             history: [],
             historyIndex: -1,
         });
-        get().pushHistory();
     },
-    clearImage: () => set({ image: defaultImage }),
 
     // Tools
     activeTool: 'move',
@@ -200,9 +229,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             adjustments: { ...state.adjustments, [key]: value },
         }));
-        // Note: For fine-grained history, we push on slider release (mouseUp) 
-        // rather than every change. The panels should call pushHistory.
-        // But if they don't, we could debounce here. For now, no auto-push per change.
+    },
+    setAdjustments: (newAdjustments, pushToHistory = true) => {
+        set((state) => ({
+            adjustments: { ...state.adjustments, ...newAdjustments },
+        }));
+        if (pushToHistory) {
+            get().pushHistory();
+        }
     },
     resetAdjustment: (key) => {
         set((state) => ({
@@ -213,8 +247,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     globalReset: () => {
         set({
             adjustments: { ...defaultAdjustments },
+            crop: { ...defaultCrop },
             masks: [],
-            activeMaskId: null
+            activeMaskId: null,
         });
         get().pushHistory();
     },
@@ -226,7 +261,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         set((state) => ({
             masks: [...state.masks, mask],
             activeMaskId: mask.id,
-            activeTool: mask.type === 'brush' ? 'brush' : state.activeTool
+            activeTool: mask.type === 'brush' ? 'brush' : state.activeTool,
         }));
         get().pushHistory();
     },
@@ -264,6 +299,78 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         })),
     updateCrop: (cropUpdate) =>
         set((state) => ({ crop: { ...state.crop, ...cropUpdate } })),
+    applyCrop: async () => {
+        const { image, crop } = get();
+        if (!image.src) return;
+
+        // Calculate pixel crop values
+        const cropX = (crop.x / 100) * image.originalWidth;
+        const cropY = (crop.y / 100) * image.originalHeight;
+        const cropW = (crop.width / 100) * image.originalWidth;
+        const cropH = (crop.height / 100) * image.originalHeight;
+
+        // Skip if crop covers the entire image
+        if (
+            Math.round(cropX) <= 0 &&
+            Math.round(cropY) <= 0 &&
+            Math.round(cropW) >= image.originalWidth &&
+            Math.round(cropH) >= image.originalHeight
+        ) {
+            set({ crop: { ...defaultCrop } });
+            return;
+        }
+
+        if (cropW < 5 || cropH < 5) {
+            set({ crop: { ...defaultCrop } });
+            return;
+        }
+
+        // Create a canvas to render the cropped image
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(cropW);
+        canvas.height = Math.round(cropH);
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+
+        // Load the current image
+        const img = new window.Image();
+        img.crossOrigin = 'anonymous';
+        await new Promise<void>((resolve, reject) => {
+            img.onload = () => resolve();
+            img.onerror = reject;
+            img.src = image.src!;
+        });
+
+        // Draw only the cropped region
+        ctx.drawImage(
+            img,
+            Math.round(cropX), Math.round(cropY), Math.round(cropW), Math.round(cropH),
+            0, 0, Math.round(cropW), Math.round(cropH)
+        );
+
+        // Convert to data URL
+        const croppedSrc = canvas.toDataURL('image/png');
+
+        // Update the image and reset crop
+        const newImage: ImageState = {
+            src: croppedSrc,
+            originalWidth: Math.round(cropW),
+            originalHeight: Math.round(cropH),
+            fileName: image.fileName,
+        };
+
+        set({
+            image: newImage,
+            crop: { ...defaultCrop },
+        });
+        get().pushHistory();
+    },
+    resetCrop: () => {
+        set({
+            crop: { ...defaultCrop },
+            adjustments: { ...get().adjustments, cropAspectRatio: 'free' },
+        });
+    },
     setStraighten: (angle: number) => {
         set((state) => {
             const { image } = state;
@@ -273,41 +380,48 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             if (!W || !H) return { adjustments: { ...state.adjustments, straighten: angle } };
 
             const angleRad = (angle * Math.PI) / 180;
-
-            // 1. Calculate the bounding box of the rotated image
             const boundingW = W * Math.abs(Math.cos(angleRad)) + H * Math.abs(Math.sin(angleRad));
             const boundingH = W * Math.abs(Math.sin(angleRad)) + H * Math.abs(Math.cos(angleRad));
-
-            // 2. Calculate the required scale to fit the original dimensions (Auto-Zoom)
-            // Ensure the rotated image COVERS the original WxH box.
             const scale = Math.max(boundingW / W, boundingH / H);
 
             return {
                 adjustments: {
                     ...state.adjustments,
                     straighten: angle,
-                    straightenScale: scale
-                }
+                    straightenScale: scale,
+                },
             };
         });
-        // Debounce history? Or push on release. GeometryPanel already pushes on release (handleChangeComplete).
-        // setStraighten is called during drag.
     },
-
 
     // History
     history: [],
     historyIndex: -1,
     pushHistory: () => {
-        const { adjustments, masks, history, historyIndex } = get();
-        const newHistory = history.slice(0, historyIndex + 1);
-        newHistory.push({
+        const { image, crop, adjustments, masks, history, historyIndex } = get();
+        if (!image.src) return;
+
+        // Slice history up to current index
+        const validHistory = historyIndex >= 0 ? history.slice(0, historyIndex + 1) : [];
+
+        // Add new entry with deep clones (always store inactive crop state in history)
+        validHistory.push({
+            image: { ...image },
+            crop: { ...crop, isActive: false },
             adjustments: { ...adjustments },
             masks: masks ? JSON.parse(JSON.stringify(masks)) : [],
-            timestamp: Date.now()
+            timestamp: Date.now(),
         });
-        if (newHistory.length > 50) newHistory.shift();
-        set({ history: newHistory, historyIndex: newHistory.length - 1 });
+
+        // Limit max history entries to 50
+        if (validHistory.length > 50) {
+            validHistory.shift();
+        }
+
+        set({
+            history: validHistory,
+            historyIndex: validHistory.length - 1,
+        });
     },
     undo: () => {
         const { history, historyIndex } = get();
@@ -315,6 +429,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const newIndex = historyIndex - 1;
             const entry = history[newIndex];
             set({
+                image: { ...entry.image },
+                crop: entry.crop ? { ...entry.crop, isActive: false } : { ...defaultCrop },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,
@@ -327,18 +443,30 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             const newIndex = historyIndex + 1;
             const entry = history[newIndex];
             set({
+                image: { ...entry.image },
+                crop: entry.crop ? { ...entry.crop, isActive: false } : { ...defaultCrop },
                 adjustments: { ...entry.adjustments },
                 masks: entry.masks ? JSON.parse(JSON.stringify(entry.masks)) : [],
                 historyIndex: newIndex,
             });
         }
     },
-    canUndo: () => get().historyIndex > 0,
-    canRedo: () => get().historyIndex < get().history.length - 1,
+    canUndo: () => {
+        const { historyIndex } = get();
+        return historyIndex > 0;
+    },
+    canRedo: () => {
+        const { history, historyIndex } = get();
+        return historyIndex >= 0 && historyIndex < history.length - 1;
+    },
 
     // UI
     exportModalOpen: false,
     setExportModalOpen: (open) => set({ exportModalOpen: open }),
+    compareMode: 'none',
+    setCompareMode: (mode) => set({ compareMode: mode }),
+    splitSliderPos: 50,
+    setSplitSliderPos: (pos) => set({ splitSliderPos: Math.min(100, Math.max(0, pos)) }),
 }));
 
 export const useAdjustments = () => useEditorStore((state) => state.adjustments);
